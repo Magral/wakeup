@@ -80,8 +80,8 @@ public class MainActivity extends Activity {
         inputParams.topMargin = dp(8);
         card.addView(macInput, inputParams);
 
-        addLabel(card, "BROADCAST-АДРЕС", dp(18));
-        broadcastInput = input("255.255.255.255", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
+        addLabel(card, "АДРЕС НАЗНАЧЕНИЯ / DDNS", dp(18));
+        broadcastInput = input("255.255.255.255 или home.example.net", InputType.TYPE_CLASS_TEXT | InputType.TYPE_TEXT_FLAG_NO_SUGGESTIONS);
         LinearLayout.LayoutParams bcParams = params(-1, dp(54));
         bcParams.topMargin = dp(8);
         card.addView(broadcastInput, bcParams);
@@ -111,7 +111,7 @@ public class MainActivity extends Activity {
         statusParams.topMargin = dp(15);
         page.addView(statusView, statusParams);
 
-        TextView hint = text("ПК и телефон должны быть подключены к одной сети Wi‑Fi/роутеру. Wake-on-LAN нужно включить в BIOS/UEFI и настройках сетевой карты ПК.", 13, MUTED, false);
+        TextView hint = text("Дома укажите broadcast-адрес сети. Вне дома подключитесь к домашнему VPN или настройте на роутере Wake-on-LAN и укажите его внешний IP/DDNS. Роутер должен переслать пакет в локальную сеть.", 13, MUTED, false);
         hint.setLineSpacing(dp(3), 1f);
         hint.setPadding(dp(2), dp(18), dp(2), dp(4));
         page.addView(hint);
@@ -177,17 +177,22 @@ public class MainActivity extends Activity {
             macInput.setError("Введите MAC из 12 шестнадцатеричных символов");
             return;
         }
-        if (!broadcast.matches("(?:[0-9]{1,3}\\.){3}[0-9]{1,3}")) {
-            broadcastInput.setError("Введите IPv4 broadcast-адрес");
+        boolean ipv4 = broadcast.matches("(?:[0-9]{1,3}\\.){3}[0-9]{1,3}");
+        boolean hostname = broadcast.length() <= 253
+                && broadcast.matches("(?i)(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*\\.?");
+        if (!ipv4 && !hostname) {
+            broadcastInput.setError("Введите IPv4-адрес или DDNS-имя");
             return;
         }
-        for (String octet : broadcast.split("\\.")) {
-            try {
-                int value = Integer.parseInt(octet);
-                if (value > 255) throw new NumberFormatException();
-            } catch (NumberFormatException ex) {
-                broadcastInput.setError("Каждая часть адреса должна быть от 0 до 255");
-                return;
+        if (ipv4) {
+            for (String octet : broadcast.split("\\.")) {
+                try {
+                    int value = Integer.parseInt(octet);
+                    if (value > 255) throw new NumberFormatException();
+                } catch (NumberFormatException ex) {
+                    broadcastInput.setError("Каждая часть IPv4-адреса должна быть от 0 до 255");
+                    return;
+                }
             }
         }
         int port;
@@ -211,8 +216,14 @@ public class MainActivity extends Activity {
             String result;
             try {
                 byte[] packet = makePacket(savedMac);
-                InetAddress address = InetAddress.getByName(savedBroadcast);
-                if (!(address instanceof java.net.Inet4Address)) throw new IllegalArgumentException("Нужен IPv4 broadcast-адрес");
+                InetAddress address = null;
+                for (InetAddress resolved : InetAddress.getAllByName(savedBroadcast)) {
+                    if (resolved instanceof java.net.Inet4Address) {
+                        address = resolved;
+                        break;
+                    }
+                }
+                if (address == null) throw new IllegalArgumentException("Имя не разрешилось в IPv4-адрес");
                 DatagramSocket socket = new DatagramSocket();
                 try {
                     socket.setBroadcast(true);
