@@ -1,0 +1,16 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'ru.wakemini.app'
+    compileSdk 35
+
+    defaultConfig {
+        applicationId 'ru.wakemini.app'
+        minSdk 23
+        targetSdk 28
+        versionCode 1
+        versionName '1.0'
+    }
+}
