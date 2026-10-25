@@ -21,6 +21,11 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
@@ -39,6 +44,9 @@ jobs:
 
       - name: Build debug APK
         run: gradle assembleDebug
+
+      - name: Build Windows helper
+        run: dotnet build pc-agent/WakeMiniAgent.csproj --configuration Release
 
       - name: Save APK artifact
         uses: actions/upload-artifact@v4

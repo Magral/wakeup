@@ -22,6 +22,11 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
@@ -41,17 +46,30 @@ jobs:
       - name: Build APK
         run: gradle assembleDebug
 
+      - name: Build Windows helper
+        run: dotnet publish pc-agent/WakeMiniAgent.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true --output publish/win-x64
+
+      - name: Name APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/WakeMini-1.1.0.apk
+
+      - name: Read release tag
+        id: release_meta
+        run: echo "tag=$(tr -d '\r\n' < .github/release-trigger)" >> "$GITHUB_OUTPUT"
+
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.0
-          name: Wake Mini 1.0.0
+          tag_name: ${{ steps.release_meta.outputs.tag }}
+          name: Wake Mini ${{ steps.release_meta.outputs.tag }}
           target_commitish: ${{ github.sha }}
           body: |
-            Первая версия Wake Mini.
+            Кнопка и виджет переключают ПК: при ответе Windows-помощника отправляется команда выключения, при отсутствии ответа — Wake-on-LAN пакет.
 
-            Поддерживает Wake-on-LAN по локальному broadcast-адресу, IPv4-адресу роутера или DDNS-имени. Для удалённого запуска предварительно настройте роутер и ПК.
-          files: app/build/outputs/apk/debug/app-debug.apk
+            Для управления установите WakeMiniAgent.exe на Windows ПК, введите его ключ в приложении и оставьте помощник запущенным. Инструкции есть в README репозитория.
+          files: |
+            app/build/outputs/apk/debug/WakeMini-1.1.0.apk
+            publish/win-x64/WakeMiniAgent.exe
+            Allow-WakeMini-Firewall.bat
           fail_on_unmatched_files: true
           make_latest: true
         env:

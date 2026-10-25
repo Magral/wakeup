@@ -1,4 +1,5 @@
 <resources>
+    <string name="wake_widget_description">Кнопка включения и выключения ПК</string>
     <style name="AppTheme" parent="android:style/Theme.Material.Light.NoActionBar">
         <item name="android:fontFamily">sans</item>
         <item name="android:colorAccent">#27C6B7</item>
