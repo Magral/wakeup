@@ -1,0 +1,58 @@
+name: Publish Wake Mini release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/release-trigger
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          accept-android-sdk-licenses: false
+          packages: platform-tools
+
+      - name: Install Android platform
+        run: |
+          yes | sdkmanager --licenses
+          sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build APK
+        run: gradle assembleDebug
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0
+          name: Wake Mini 1.0.0
+          target_commitish: ${{ github.sha }}
+          body: |
+            Первая версия Wake Mini.
+
+            Поддерживает Wake-on-LAN по локальному broadcast-адресу, IPv4-адресу роутера или DDNS-имени. Для удалённого запуска предварительно настройте роутер и ПК.
+          files: app/build/outputs/apk/debug/app-debug.apk
+          fail_on_unmatched_files: true
+          make_latest: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
