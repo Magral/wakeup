@@ -40,7 +40,7 @@ final class WakeController {
     static String toggle(Context context) {
         SharedPreferences p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         String macText = p.getString("mac", "").trim();
-        String host = p.getString("address", "").trim();
+        String host = p.getString("address", p.getString("broadcast", "")).trim();
         String portText = p.getString("port", "3000").trim();
         String keyText = p.getString("key", "").trim();
         String issue = validate(macText, host, portText, keyText);
