@@ -51,7 +51,7 @@ internal static class Program
 
         try
         {
-            using var udp = new UdpClient(IPAddress.Any, Port);
+            using var udp = new UdpClient(new IPEndPoint(IPAddress.Any, Port));
             while (true)
             {
                 var datagram = await udp.ReceiveAsync();
