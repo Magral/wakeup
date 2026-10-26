@@ -101,6 +101,7 @@ class Tests(unittest.TestCase):
 
     @patch('main.authorize')
     def test_discovery_and_query_do_not_invent_power_state(self, auth):
+        self.assertEqual(main.dispatch(event(kind='discovery'))['payload']['devices'][0]['type'], 'devices.types.other')
         self.assertFalse(main.dispatch(event(kind='discovery'))['payload']['devices'][0]['capabilities'][0]['retrievable'])
         self.assertEqual(main.dispatch(event(kind='query'))['payload']['devices'][0]['capabilities'], [])
 

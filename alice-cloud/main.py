@@ -108,10 +108,10 @@ def dispatch(event):
     answer = {'request_id': request_id}
     if kind == 'discovery':
         answer['payload'] = {'user_id': user_id, 'devices': [{
-            'id': DEVICE_ID, 'name': 'Компьютер', 'type': 'devices.types.switch',
+            'id': DEVICE_ID, 'name': 'Компьютер', 'type': 'devices.types.other',
             'description': 'Включение по Wake-on-LAN и завершение работы Windows',
             'capabilities': [{'type': CAPABILITY, 'retrievable': False, 'reportable': False}],
-            'device_info': {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.0.0'}
+            'device_info': {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.0.1'}
         }]}
         return answer
     if kind == 'unlink':

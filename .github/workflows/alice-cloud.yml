@@ -22,18 +22,18 @@ jobs:
           python - <<'PY'
           import zipfile
           from pathlib import Path
-          with zipfile.ZipFile('WakeMini-Alice-Cloud-1.0.0.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
+          with zipfile.ZipFile('WakeMini-Alice-Cloud-1.0.1.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
               for name in ['main.py', 'README.md', 'environment.example.json']:
                   archive.write(Path('alice-cloud') / name, name)
           PY
       - uses: actions/upload-artifact@v4
         with:
           name: WakeMini-Alice-Cloud
-          path: WakeMini-Alice-Cloud-1.0.0.zip
+          path: WakeMini-Alice-Cloud-1.0.1.zip
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: alice-cloud-v1.0.0
-          name: Wake Mini — интеграция с Алисой 1.0.0
+          tag_name: alice-cloud-v1.0.1
+          name: Wake Mini — интеграция с Алисой 1.0.1
           target_commitish: ${{ github.sha }}
           make_latest: false
           body: |
@@ -43,5 +43,5 @@ jobs:
             Настройка OAuth и облака: alice-cloud/README.md в репозитории и внутри ZIP.
             Локальные тесты UDP и авторизации пройдены. Проверка с реальным роутером и публикация навыка выполняются после настройки облака.
             APK и Windows-помощник 1.1.1 заменять не требуется.
-          files: WakeMini-Alice-Cloud-1.0.0.zip
+          files: WakeMini-Alice-Cloud-1.0.1.zip
           fail_on_unmatched_files: true
