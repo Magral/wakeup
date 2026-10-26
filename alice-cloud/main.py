@@ -1,0 +1,175 @@
+"""Private Yandex Smart Home provider; stdlib only. No secrets in source."""
+import base64
+import hashlib
+import hmac
+import json
+import logging
+import os
+import re
+import secrets
+import socket
+from urllib.request import Request, urlopen
+
+CAPABILITY = 'devices.capabilities.on_off'
+DEVICE_ID = 'wakemini-pc'
+LOG = logging.getLogger(__name__)
+
+
+class DeviceError(Exception):
+    def __init__(self, code, message):
+        self.code, self.message = code, message
+
+
+def settings():
+    required = ['PC_HOST', 'PC_MAC', 'AGENT_KEY', 'YANDEX_LOGIN', 'OAUTH_CLIENT_ID']
+    values = {name: os.environ[name].strip() for name in required}
+    mac = re.sub('[:-]', '', values['PC_MAC'])
+    if not re.fullmatch('[0-9a-fA-F]{12}', mac):
+        raise ValueError('Invalid PC_MAC')
+    if not re.fullmatch('[0-9a-fA-F]{64}', values['AGENT_KEY']):
+        raise ValueError('Invalid AGENT_KEY')
+    port = int(os.environ.get('PC_PORT', '3000'))
+    if not 1 <= port <= 65535:
+        raise ValueError('Invalid PC_PORT')
+    return values | {'mac': bytes.fromhex(mac), 'key': bytes.fromhex(values['AGENT_KEY']), 'port': port}
+
+
+def authorize(header, cfg):
+    if not isinstance(header, str) or not header.startswith('Bearer '):
+        raise PermissionError('Account linking required')
+    token = header[7:]
+    if not token or len(token) > 2048 or any(c.isspace() for c in token):
+        raise PermissionError('Invalid authorization')
+    request = Request('https://login.yandex.ru/info?format=json',
+                      headers={'Authorization': 'OAuth ' + token})
+    try:
+        with urlopen(request, timeout=0.8) as response:
+            user = json.load(response)
+    except Exception:
+        raise PermissionError('Authorization unavailable') from None
+    if str(user.get('login', '')).casefold() != cfg['YANDEX_LOGIN'].casefold() or user.get('client_id') != cfg['OAUTH_CLIENT_ID']:
+        raise PermissionError('Account not allowed')
+    return str(user['id'])
+
+
+def sign(key, message):
+    return hmac.new(key, message.encode('ascii'), hashlib.sha256).hexdigest()
+
+
+def validate_reply(packet, verb, nonce, key):
+    try:
+        fields = packet.decode('ascii').split('|')
+        return (len(fields) == 4 and fields[:3] == ['WM1', verb, nonce]
+                and hmac.compare_digest(fields[3], sign(key, verb + '|' + nonce)))
+    except (UnicodeError, ValueError):
+        return False
+
+
+def power_on(cfg):
+    packet = b'\xff' * 6 + cfg['mac'] * 16
+    # Resolve once, never accept a caller-supplied host or MAC.
+    ip = socket.gethostbyname(cfg['PC_HOST'])
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        for _ in range(3):
+            sock.sendto(packet, (ip, cfg['port']))
+
+
+def power_off(cfg):
+    nonce = secrets.token_hex(16)
+    ip = socket.gethostbyname(cfg['PC_HOST'])
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.settimeout(0.6)
+        # Same socket/endpoint for challenge and command, as required by Agent.
+        sock.connect((ip, cfg['port']))
+        try:
+            sock.send(('WM1|PING|' + nonce).encode('ascii'))
+            reply = sock.recv(256)
+            if not validate_reply(reply, 'ONLINE', nonce, cfg['key']):
+                raise DeviceError('INTERNAL_ERROR', 'Ключ Windows-помощника не совпадает.')
+            command = 'WM1|SHUTDOWN|' + nonce + '|' + sign(cfg['key'], 'SHUTDOWN|' + nonce)
+            sock.send(command.encode('ascii'))
+            reply = sock.recv(256)
+            if not validate_reply(reply, 'SHUTDOWN_ACCEPTED', nonce, cfg['key']):
+                raise DeviceError('INTERNAL_ERROR', 'Подтверждение выключения не проверено.')
+        except (socket.timeout, ConnectionRefusedError):
+            # Never wake a PC in response to an OFF command or retry shutdown.
+            raise DeviceError('DEVICE_UNREACHABLE', 'Нет подтверждения. ПК выключен, помощник недоступен или команда могла быть принята.') from None
+
+
+def dispatch(event):
+    if not isinstance(event, dict):
+        raise ValueError('Invalid event')
+    cfg = settings()
+    headers = event.get('headers', {})
+    user_id = authorize(headers.get('authorization', ''), cfg)
+    kind = event.get('request_type')
+    request_id = str(headers.get('request_id', ''))[:128]
+    LOG.info('smart_home type=%s request_id=%s', str(kind)[:20], json.dumps(request_id))
+    answer = {'request_id': request_id}
+    if kind == 'discovery':
+        answer['payload'] = {'user_id': user_id, 'devices': [{
+            'id': DEVICE_ID, 'name': 'Компьютер', 'type': 'devices.types.switch',
+            'description': 'Включение по Wake-on-LAN и завершение работы Windows',
+            'capabilities': [{'type': CAPABILITY, 'retrievable': False, 'reportable': False}],
+            'device_info': {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.0.0'}
+        }]}
+        return answer
+    if kind == 'unlink':
+        return answer
+    if kind not in ('action', 'query'):
+        raise ValueError('Unsupported request_type')
+    devices = event.get('payload', {}).get('devices', [])
+    if not isinstance(devices, list) or len(devices) != 1:
+        raise ValueError('Exactly one device is supported')
+    device = devices[0]
+    result = {'id': device.get('id')}
+    if device.get('id') != DEVICE_ID:
+        result.update(error_code='DEVICE_NOT_FOUND', error_message='Устройство не найдено.')
+    elif kind == 'query':
+        # UDP silence cannot distinguish OFF from a broken connection. Do not invent state.
+        result['capabilities'] = []
+    else:
+        caps = device.get('capabilities', [])
+        valid = (len(caps) == 1 and caps[0].get('type') == CAPABILITY
+                 and caps[0].get('state', {}).get('instance') == 'on'
+                 and type(caps[0].get('state', {}).get('value')) is bool)
+        if not valid:
+            result['action_result'] = {'status': 'ERROR', 'error_code': 'INVALID_ACTION'}
+        else:
+            value = caps[0]['state']['value']
+            action_result = {'status': 'DONE'}
+            try:
+                (power_on if value else power_off)(cfg)
+            except DeviceError as exc:
+                action_result = {'status': 'ERROR', 'error_code': exc.code, 'error_message': exc.message}
+            except OSError:
+                action_result = {'status': 'ERROR', 'error_code': 'DEVICE_UNREACHABLE'}
+            result['capabilities'] = [{'type': CAPABILITY, 'state': {'instance': 'on', 'action_result': action_result}}]
+    answer['payload'] = {'devices': [result]}
+    return answer
+
+
+def handler(event, context):
+    """Native Smart Home Cloud Function (raw); also supports an HTTP envelope for testing."""
+    http = isinstance(event, dict) and 'httpMethod' in event
+    try:
+        if http:
+            body = event.get('body', '')
+            if event.get('isBase64Encoded'):
+                body = base64.b64decode(body).decode('utf-8')
+            event = json.loads(body)
+        result = dispatch(event)
+        if not http:
+            return result
+        return {'statusCode': 200, 'headers': {'Content-Type': 'application/json'},
+                'body': json.dumps(result, ensure_ascii=False)}
+    except PermissionError:
+        if not http:
+            # Raw Cloud Functions always return HTTP 200 for normal returns;
+            # raise a sanitized error to deny the request without leaking discovery or secrets.
+            raise PermissionError('Account not authorized') from None
+        return {'statusCode': 401, 'body': ''}
+    except (KeyError, ValueError, TypeError, AttributeError):
+        if not http:
+            raise ValueError('Invalid request or missing function settings') from None
+        return {'statusCode': 400, 'body': ''}
