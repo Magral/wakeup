@@ -50,7 +50,7 @@ jobs:
         run: dotnet publish pc-agent/WakeMiniAgent.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true --output publish/win-x64
 
       - name: Name APK
-        run: cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/WakeMini-1.1.2.apk
+        run: cp app/build/outputs/apk/debug/app-debug.apk app/build/outputs/apk/debug/WakeMini-1.1.3.apk
 
       - name: Read release tag
         id: release_meta
@@ -63,11 +63,11 @@ jobs:
           name: Wake Mini ${{ steps.release_meta.outputs.tag }}
           target_commitish: ${{ github.sha }}
           body: |
-            Кнопка и виджет переключают ПК: при ответе Windows-помощника отправляется команда выключения, при отсутствии ответа — Wake-on-LAN пакет.
+            Добавлен индикатор связи с ПК: зелёный при ответе Windows-помощника, красный при отсутствии ответа. Проверка выполняется только запросом статуса и не переключает питание.
 
             Для управления установите WakeMiniAgent.exe на Windows ПК, введите его ключ в приложении и оставьте помощник запущенным. Инструкции есть в README репозитория.
           files: |
-            app/build/outputs/apk/debug/WakeMini-1.1.2.apk
+            app/build/outputs/apk/debug/WakeMini-1.1.3.apk
             publish/win-x64/WakeMiniAgent.exe
             Allow-WakeMini-Firewall.bat
           fail_on_unmatched_files: true

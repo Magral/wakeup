@@ -6,10 +6,13 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.text.Editable;
 import android.text.InputType;
 import android.text.TextWatcher;
 import android.view.Gravity;
+import android.view.View;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
 import android.widget.EditText;
@@ -33,6 +36,16 @@ public class MainActivity extends Activity {
     private EditText keyInput;
     private Button toggleButton;
     private TextView statusView;
+    private View connectionDot;
+    private TextView connectionView;
+    private boolean statusCheckRunning;
+    private final Handler statusHandler = new Handler(Looper.getMainLooper());
+    private final Runnable statusPoll = new Runnable() {
+        @Override public void run() {
+            refreshPcStatus();
+            statusHandler.postDelayed(this, 15_000);
+        }
+    };
 
     @Override
     protected void onCreate(Bundle state) {
@@ -64,6 +77,30 @@ public class MainActivity extends Activity {
         LinearLayout.LayoutParams introParams = params(-1, -2);
         introParams.topMargin = dp(6);
         page.addView(intro, introParams);
+
+        LinearLayout connectionPanel = new LinearLayout(this);
+        connectionPanel.setOrientation(LinearLayout.HORIZONTAL);
+        connectionPanel.setGravity(Gravity.CENTER_VERTICAL);
+        connectionPanel.setPadding(dp(14), dp(12), dp(14), dp(12));
+        connectionPanel.setBackground(round(PANEL, dp(14)));
+        LinearLayout.LayoutParams connectionParams = params(-1, -2);
+        connectionParams.topMargin = dp(18);
+        page.addView(connectionPanel, connectionParams);
+
+        connectionDot = new View(this);
+        setIndicatorColor(Color.rgb(130, 145, 155));
+        LinearLayout.LayoutParams dotParams = params(dp(14), dp(14));
+        dotParams.rightMargin = dp(10);
+        connectionPanel.addView(connectionDot, dotParams);
+
+        connectionView = text("Проверяю связь с ПК…", 14, MUTED, true);
+        LinearLayout.LayoutParams connectionTextParams = new LinearLayout.LayoutParams(0, -2, 1f);
+        connectionPanel.addView(connectionView, connectionTextParams);
+
+        TextView refreshStatus = text("ПРОВЕРИТЬ", 11, ACCENT, true);
+        refreshStatus.setPadding(dp(8), dp(8), 0, dp(8));
+        refreshStatus.setOnClickListener(v -> refreshPcStatus());
+        connectionPanel.addView(refreshStatus);
 
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.VERTICAL);
@@ -167,6 +204,66 @@ public class MainActivity extends Activity {
 
     private LinearLayout.LayoutParams params(int width, int height) { return new LinearLayout.LayoutParams(width, height); }
     private int dp(float value) { return (int) (value * getResources().getDisplayMetrics().density + 0.5f); }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        statusHandler.removeCallbacks(statusPoll);
+        refreshPcStatus();
+        statusHandler.postDelayed(statusPoll, 15_000);
+    }
+
+    @Override
+    protected void onPause() {
+        statusHandler.removeCallbacks(statusPoll);
+        super.onPause();
+    }
+
+    private void setIndicatorColor(int color) {
+        if (connectionDot == null) return;
+        GradientDrawable dot = new GradientDrawable();
+        dot.setShape(GradientDrawable.OVAL);
+        dot.setColor(color);
+        connectionDot.setBackground(dot);
+    }
+
+    private void setPcStatus(String message, int color) {
+        if (connectionView == null) return;
+        connectionView.setText(message);
+        connectionView.setTextColor(color);
+        setIndicatorColor(color);
+    }
+
+    private void refreshPcStatus() {
+        if (connectionView == null || statusCheckRunning) return;
+        String mac = macInput.getText().toString().trim();
+        String address = addressInput.getText().toString().trim();
+        String port = portInput.getText().toString().trim();
+        String key = keyInput.getText().toString().trim();
+        String issue = WakeController.validate(mac, address, port, key);
+        if (issue != null || key.isEmpty()) {
+            setPcStatus("Заполните настройки и ключ помощника", Color.rgb(130, 145, 155));
+            return;
+        }
+
+        statusCheckRunning = true;
+        setPcStatus("Проверяю связь…", ACCENT);
+        worker.execute(() -> {
+            boolean online = false;
+            try {
+                online = WakeController.isAgentOnline(this);
+            } catch (Exception ignored) {
+                // An unanswered or invalid response is shown as no connection.
+            }
+            final boolean isOnline = online;
+            runOnUiThread(() -> {
+                statusCheckRunning = false;
+                if (isFinishing()) return;
+                setPcStatus(isOnline ? "ПК включён" : "ПК выключен или недоступен",
+                        isOnline ? Color.rgb(74, 214, 132) : Color.rgb(255, 105, 105));
+            });
+        });
+    }
 
     private void loadSaved() {
         android.content.SharedPreferences p = getSharedPreferences(WakeController.PREFS, MODE_PRIVATE);

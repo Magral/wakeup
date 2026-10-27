@@ -37,6 +37,41 @@ final class WakeController {
         return null;
     }
 
+    static boolean isAgentOnline(Context context) throws Exception {
+        SharedPreferences p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        String macText = p.getString("mac", "").trim();
+        String host = p.getString("address", p.getString("broadcast", "")).trim();
+        String portText = p.getString("port", "3000").trim();
+        String keyText = p.getString("key", "").trim();
+        String issue = validate(macText, host, portText, keyText);
+        if (issue != null) throw new IllegalArgumentException(issue);
+        byte[] key = hexToBytes(keyText);
+        if (key == null) throw new IllegalArgumentException("Для проверки статуса нужен ключ Windows-помощника.");
+
+        int port = Integer.parseInt(portText);
+        InetAddress target = resolveIpv4(host);
+        String nonce = toHex(randomBytes(16));
+        try (DatagramSocket socket = new DatagramSocket()) {
+            socket.setSoTimeout(TIMEOUT_MS);
+            socket.connect(target, port);
+            sendText(socket, target, port, "WM1|PING|" + nonce);
+            try {
+                String response = receiveText(socket, target);
+                String[] fields = response.split("\\|", -1);
+                return fields.length == 4 && fields[0].equals("WM1") && fields[1].equals("ONLINE")
+                        && fields[2].equals(nonce) && verify(key, "ONLINE|" + nonce, fields[3]);
+            } catch (SocketTimeoutException ex) {
+                return false;
+            }
+        }
+    }
+
+    private static byte[] randomBytes(int count) {
+        byte[] value = new byte[count];
+        RANDOM.nextBytes(value);
+        return value;
+    }
+
     static String toggle(Context context) {
         SharedPreferences p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         String macText = p.getString("mac", "").trim();
