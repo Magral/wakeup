@@ -356,8 +356,8 @@ internal static class Program
             {
                 Text = "Wake Mini — запуск приложения",
                 AutoScaleMode = AutoScaleMode.Dpi,
-                ClientSize = new System.Drawing.Size(760, 330),
-                MinimumSize = new System.Drawing.Size(620, 300),
+                ClientSize = new System.Drawing.Size(760, 400),
+                MinimumSize = new System.Drawing.Size(620, 360),
                 FormBorderStyle = FormBorderStyle.Sizable,
                 StartPosition = FormStartPosition.CenterScreen,
                 MaximizeBox = false,
@@ -365,44 +365,53 @@ internal static class Program
                 AutoScroll = true
             };
 
+            // Use content-sized rows: fixed pixel heights clip controls on scaled Windows displays.
             var layout = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
                 Padding = new Padding(16),
-                ColumnCount = 3,
+                ColumnCount = 1,
                 RowCount = 5,
                 GrowStyle = TableLayoutPanelGrowStyle.FixedSize
             };
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
-            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            for (var row = 0; row < layout.RowCount; row++)
+                layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
+            var pathRow = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 3,
+                RowCount = 1,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Margin = Padding.Empty,
+                GrowStyle = TableLayoutPanelGrowStyle.FixedSize
+            };
+            pathRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            pathRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            pathRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
 
             var pathLabel = new Label
             {
                 Text = "Приложение (.exe):",
                 AutoSize = true,
                 Anchor = AnchorStyles.Left,
-                Margin = new Padding(3, 3, 12, 3)
+                Margin = new Padding(3, 8, 12, 8)
             };
             var pathBox = new TextBox
             {
                 Text = settings.LaunchPath ?? "",
                 Dock = DockStyle.Fill,
-                Anchor = AnchorStyles.Left | AnchorStyles.Right,
                 Margin = new Padding(3, 8, 8, 8)
             };
             var browse = new Button
             {
                 Text = "Обзор…",
                 AutoSize = true,
-                MinimumSize = new System.Drawing.Size(96, 34),
+                MinimumSize = new System.Drawing.Size(100, 40),
                 Anchor = AnchorStyles.Right,
-                Margin = new Padding(3, 5, 3, 5)
+                Margin = new Padding(3, 4, 3, 4)
             };
             browse.Click += (_, _) =>
             {
@@ -413,19 +422,22 @@ internal static class Program
                 };
                 if (picker.ShowDialog(form) == DialogResult.OK) pathBox.Text = picker.FileName;
             };
+            pathRow.Controls.Add(pathLabel, 0, 0);
+            pathRow.Controls.Add(pathBox, 1, 0);
+            pathRow.Controls.Add(browse, 2, 0);
 
             var argsLabel = new Label
             {
                 Text = "Параметры запуска (необязательно):",
                 AutoSize = true,
                 Anchor = AnchorStyles.Left,
-                Margin = new Padding(3, 3, 3, 3)
+                Margin = new Padding(3, 8, 3, 2)
             };
             var argsBox = new TextBox
             {
                 Text = settings.LaunchArguments ?? "",
                 Dock = DockStyle.Fill,
-                Margin = new Padding(3, 4, 3, 6)
+                Margin = new Padding(3, 4, 3, 10)
             };
             var autoStart = new CheckBox
             {
@@ -433,11 +445,13 @@ internal static class Program
                 Checked = settings.LaunchOnStartup,
                 AutoSize = true,
                 Anchor = AnchorStyles.Left,
-                Margin = new Padding(3, 10, 3, 3)
+                Margin = new Padding(3, 8, 3, 8)
             };
             var buttons = new FlowLayoutPanel
             {
                 Dock = DockStyle.Fill,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
                 FlowDirection = FlowDirection.RightToLeft,
                 WrapContents = false,
                 Margin = new Padding(0, 8, 0, 0)
@@ -446,7 +460,7 @@ internal static class Program
             {
                 Text = "Сохранить",
                 DialogResult = DialogResult.OK,
-                MinimumSize = new System.Drawing.Size(104, 36),
+                MinimumSize = new System.Drawing.Size(110, 40),
                 AutoSize = true,
                 Margin = new Padding(8, 3, 0, 3)
             };
@@ -454,24 +468,18 @@ internal static class Program
             {
                 Text = "Отмена",
                 DialogResult = DialogResult.Cancel,
-                MinimumSize = new System.Drawing.Size(96, 36),
+                MinimumSize = new System.Drawing.Size(100, 40),
                 AutoSize = true,
                 Margin = new Padding(8, 3, 0, 3)
             };
             buttons.Controls.Add(save);
             buttons.Controls.Add(cancel);
 
-            layout.Controls.Add(pathLabel, 0, 0);
-            layout.Controls.Add(pathBox, 1, 0);
-            layout.Controls.Add(browse, 2, 0);
+            layout.Controls.Add(pathRow, 0, 0);
             layout.Controls.Add(argsLabel, 0, 1);
-            layout.SetColumnSpan(argsLabel, 3);
             layout.Controls.Add(argsBox, 0, 2);
-            layout.SetColumnSpan(argsBox, 3);
             layout.Controls.Add(autoStart, 0, 3);
-            layout.SetColumnSpan(autoStart, 3);
             layout.Controls.Add(buttons, 0, 4);
-            layout.SetColumnSpan(buttons, 3);
             form.Controls.Add(layout);
             form.AcceptButton = save;
             form.CancelButton = cancel;
