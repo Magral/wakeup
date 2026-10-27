@@ -355,27 +355,124 @@ internal static class Program
             using var form = new Form
             {
                 Text = "Wake Mini — запуск приложения",
-                Width = 620,
-                Height = 255,
-                FormBorderStyle = FormBorderStyle.FixedDialog,
+                AutoScaleMode = AutoScaleMode.Dpi,
+                ClientSize = new System.Drawing.Size(760, 330),
+                MinimumSize = new System.Drawing.Size(620, 300),
+                FormBorderStyle = FormBorderStyle.Sizable,
                 StartPosition = FormStartPosition.CenterScreen,
                 MaximizeBox = false,
-                MinimizeBox = false
+                MinimizeBox = false,
+                AutoScroll = true
             };
-            var pathLabel = new Label { Text = "Приложение (.exe):", Left = 12, Top = 15, Width = 150 };
-            var pathBox = new TextBox { Left = 12, Top = 38, Width = 485, Text = settings.LaunchPath ?? "" };
-            var browse = new Button { Text = "Обзор…", Left = 505, Top = 36, Width = 85 };
+
+            var layout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                Padding = new Padding(16),
+                ColumnCount = 3,
+                RowCount = 5,
+                GrowStyle = TableLayoutPanelGrowStyle.FixedSize
+            };
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48));
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+            var pathLabel = new Label
+            {
+                Text = "Приложение (.exe):",
+                AutoSize = true,
+                Anchor = AnchorStyles.Left,
+                Margin = new Padding(3, 3, 12, 3)
+            };
+            var pathBox = new TextBox
+            {
+                Text = settings.LaunchPath ?? "",
+                Dock = DockStyle.Fill,
+                Anchor = AnchorStyles.Left | AnchorStyles.Right,
+                Margin = new Padding(3, 8, 8, 8)
+            };
+            var browse = new Button
+            {
+                Text = "Обзор…",
+                AutoSize = true,
+                MinimumSize = new System.Drawing.Size(96, 34),
+                Anchor = AnchorStyles.Right,
+                Margin = new Padding(3, 5, 3, 5)
+            };
             browse.Click += (_, _) =>
             {
-                using var picker = new OpenFileDialog { Filter = "Программы Windows (*.exe)|*.exe", CheckFileExists = true };
+                using var picker = new OpenFileDialog
+                {
+                    Filter = "Программы Windows (*.exe)|*.exe",
+                    CheckFileExists = true
+                };
                 if (picker.ShowDialog(form) == DialogResult.OK) pathBox.Text = picker.FileName;
             };
-            var argsLabel = new Label { Text = "Параметры запуска (необязательно):", Left = 12, Top = 78, Width = 300 };
-            var argsBox = new TextBox { Left = 12, Top = 101, Width = 578, Text = settings.LaunchArguments ?? "" };
-            var autoStart = new CheckBox { Text = "Запускать это приложение при входе в Windows", Left = 12, Top = 137, Width = 400, Checked = settings.LaunchOnStartup };
-            var save = new Button { Text = "Сохранить", Left = 410, Top = 176, Width = 85, DialogResult = DialogResult.OK };
-            var cancel = new Button { Text = "Отмена", Left = 505, Top = 176, Width = 85, DialogResult = DialogResult.Cancel };
-            form.Controls.AddRange(new Control[] { pathLabel, pathBox, browse, argsLabel, argsBox, autoStart, save, cancel });
+
+            var argsLabel = new Label
+            {
+                Text = "Параметры запуска (необязательно):",
+                AutoSize = true,
+                Anchor = AnchorStyles.Left,
+                Margin = new Padding(3, 3, 3, 3)
+            };
+            var argsBox = new TextBox
+            {
+                Text = settings.LaunchArguments ?? "",
+                Dock = DockStyle.Fill,
+                Margin = new Padding(3, 4, 3, 6)
+            };
+            var autoStart = new CheckBox
+            {
+                Text = "Запускать это приложение при входе в Windows",
+                Checked = settings.LaunchOnStartup,
+                AutoSize = true,
+                Anchor = AnchorStyles.Left,
+                Margin = new Padding(3, 10, 3, 3)
+            };
+            var buttons = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.RightToLeft,
+                WrapContents = false,
+                Margin = new Padding(0, 8, 0, 0)
+            };
+            var save = new Button
+            {
+                Text = "Сохранить",
+                DialogResult = DialogResult.OK,
+                MinimumSize = new System.Drawing.Size(104, 36),
+                AutoSize = true,
+                Margin = new Padding(8, 3, 0, 3)
+            };
+            var cancel = new Button
+            {
+                Text = "Отмена",
+                DialogResult = DialogResult.Cancel,
+                MinimumSize = new System.Drawing.Size(96, 36),
+                AutoSize = true,
+                Margin = new Padding(8, 3, 0, 3)
+            };
+            buttons.Controls.Add(save);
+            buttons.Controls.Add(cancel);
+
+            layout.Controls.Add(pathLabel, 0, 0);
+            layout.Controls.Add(pathBox, 1, 0);
+            layout.Controls.Add(browse, 2, 0);
+            layout.Controls.Add(argsLabel, 0, 1);
+            layout.SetColumnSpan(argsLabel, 3);
+            layout.Controls.Add(argsBox, 0, 2);
+            layout.SetColumnSpan(argsBox, 3);
+            layout.Controls.Add(autoStart, 0, 3);
+            layout.SetColumnSpan(autoStart, 3);
+            layout.Controls.Add(buttons, 0, 4);
+            layout.SetColumnSpan(buttons, 3);
+            form.Controls.Add(layout);
             form.AcceptButton = save;
             form.CancelButton = cancel;
 
