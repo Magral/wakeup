@@ -6,7 +6,9 @@ import android.graphics.Color;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Bundle;
+import android.text.Editable;
 import android.text.InputType;
+import android.text.TextWatcher;
 import android.view.Gravity;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.Button;
@@ -39,6 +41,7 @@ public class MainActivity extends Activity {
         getWindow().setNavigationBarColor(BG);
         buildScreen();
         loadSaved();
+        enableAutoSave();
     }
 
     private void buildScreen() {
@@ -88,6 +91,9 @@ public class MainActivity extends Activity {
         TextView keyHint = text("Ключ нужен для выключения. Без него кнопка сможет только разбудить ПК.", 12, MUTED, false);
         keyHint.setPadding(dp(2), dp(8), dp(2), 0);
         card.addView(keyHint);
+        TextView saveHint = text("Настройки сохраняются автоматически на этом телефоне.", 12, MUTED, false);
+        saveHint.setPadding(dp(2), dp(8), dp(2), 0);
+        card.addView(saveHint);
 
         toggleButton = new Button(this);
         toggleButton.setText("⏻   ВКЛ / ВЫКЛ ПК");
@@ -170,6 +176,36 @@ public class MainActivity extends Activity {
         keyInput.setText(p.getString("key", ""));
     }
 
+    private void enableAutoSave() {
+        TextWatcher watcher = new TextWatcher() {
+            @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+            @Override public void onTextChanged(CharSequence s, int start, int before, int count) { }
+            @Override public void afterTextChanged(Editable s) { saveSettings(); }
+        };
+        macInput.addTextChangedListener(watcher);
+        addressInput.addTextChangedListener(watcher);
+        portInput.addTextChangedListener(watcher);
+        keyInput.addTextChangedListener(watcher);
+    }
+
+    private void saveSettings() {
+        if (macInput == null || addressInput == null || portInput == null || keyInput == null) return;
+        saveSettings(
+                macInput.getText().toString().trim(),
+                addressInput.getText().toString().trim(),
+                portInput.getText().toString().trim(),
+                keyInput.getText().toString().trim());
+    }
+
+    private void saveSettings(String mac, String address, String port, String key) {
+        getSharedPreferences(WakeController.PREFS, MODE_PRIVATE).edit()
+                .putString("mac", mac)
+                .putString("address", address)
+                .putString("port", port)
+                .putString("key", key)
+                .apply();
+    }
+
     private void saveAndToggle() {
         String mac = macInput.getText().toString().trim();
         String address = addressInput.getText().toString().trim();
@@ -181,8 +217,7 @@ public class MainActivity extends Activity {
             statusView.setTextColor(Color.rgb(255, 133, 133));
             return;
         }
-        getSharedPreferences(WakeController.PREFS, MODE_PRIVATE).edit()
-                .putString("mac", mac).putString("address", address).putString("port", port).putString("key", key).apply();
+        saveSettings(mac, address, port, key);
         ((InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(toggleButton.getWindowToken(), 0);
         setBusy(true, "Проверяю компьютер…");
         worker.execute(() -> {
