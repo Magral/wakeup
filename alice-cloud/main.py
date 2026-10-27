@@ -74,7 +74,7 @@ def validate_reply(packet, verb, nonce, key):
 
 
 def power_on(cfg):
-    packet = b'\xff' * 6 + cfg['mac'] * 16
+    packet = bytes([255]) * 6 + cfg['mac'] * 16
     # Resolve once, never accept a caller-supplied host or MAC.
     ip = socket.gethostbyname(cfg['PC_HOST'])
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
