@@ -36,7 +36,7 @@ class Tests(unittest.TestCase):
                 self.assertEqual(packet, b'\xff' * 6 + bytes.fromhex('001122aabbcc') * 16)
 
     def test_commands_interoperate_over_real_udp(self):
-        for command in ('SHUTDOWN', 'RESTART', 'SLEEP'):
+        for command in ('SHUTDOWN', 'RESTART', 'SLEEP', 'LAUNCH'):
             failures = []
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server:
                 server.bind(('127.0.0.1', 0))
@@ -96,7 +96,7 @@ class Tests(unittest.TestCase):
 
     @patch('main.authorize')
     def test_restart_and_sleep_are_separate_one_shot_devices(self, auth):
-        for device_id, command in ((main.RESTART_DEVICE_ID, 'RESTART'), (main.SLEEP_DEVICE_ID, 'SLEEP')):
+        for device_id, command in ((main.RESTART_DEVICE_ID, 'RESTART'), (main.SLEEP_DEVICE_ID, 'SLEEP'), (main.APP_DEVICE_ID, 'LAUNCH')):
             request = event()
             request['payload']['devices'][0]['id'] = device_id
             with patch('main.agent_command') as run:
@@ -140,7 +140,7 @@ class Tests(unittest.TestCase):
     @patch('main.authorize')
     def test_discovery_and_query_do_not_invent_power_state(self, auth):
         found = main.dispatch(event(kind='discovery'))['payload']['devices']
-        self.assertEqual([device['id'] for device in found], [main.DEVICE_ID, main.RESTART_DEVICE_ID, main.SLEEP_DEVICE_ID])
+        self.assertEqual([device['id'] for device in found], [main.DEVICE_ID, main.RESTART_DEVICE_ID, main.SLEEP_DEVICE_ID, main.APP_DEVICE_ID])
         self.assertTrue(found[0]['capabilities'][0]['retrievable'])
         self.assertFalse(found[1]['capabilities'][0]['retrievable'])
         with patch('main.power_state', return_value=True):
@@ -155,5 +155,14 @@ class Tests(unittest.TestCase):
         with patch('main.power_state', side_effect=main.DeviceError('DEVICE_UNREACHABLE', 'offline')):
             status = main.dispatch(event(kind='query'))['payload']['devices'][0]
         self.assertEqual(status['error_code'], 'DEVICE_UNREACHABLE')
+
+    @patch('main.authorize')
+    def test_launch_not_configured_is_returned_as_action_error(self, auth):
+        request = event()
+        request['payload']['devices'][0]['id'] = main.APP_DEVICE_ID
+        with patch('main.agent_command', side_effect=main.DeviceError('INVALID_ACTION', 'Настройте приложение')):
+            response = main.dispatch(request)
+        result = response['payload']['devices'][0]['capabilities'][0]['state']['action_result']
+        self.assertEqual(result['error_code'], 'INVALID_ACTION')
 
 if __name__ == '__main__': unittest.main()

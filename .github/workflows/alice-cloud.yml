@@ -28,27 +28,27 @@ jobs:
           python - <<'PY'
           import zipfile
           from pathlib import Path
-          with zipfile.ZipFile('WakeMini-Alice-Cloud-1.1.1.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
+          with zipfile.ZipFile('WakeMini-Alice-Cloud-1.2.0.zip', 'w', zipfile.ZIP_DEFLATED) as archive:
               for name in ['main.py', 'README.md', 'environment.example.json']:
                   archive.write(Path('alice-cloud') / name, name)
           PY
       - uses: actions/upload-artifact@v4
         with:
-          name: WakeMini-Alice-1.1.1
+          name: WakeMini-Alice-1.2.0
           path: |
-            WakeMini-Alice-Cloud-1.1.1.zip
+            WakeMini-Alice-Cloud-1.2.0.zip
             publish/win-x64/WakeMiniAgent.exe
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: alice-cloud-v1.1.1
-          name: Wake Mini — Алиса и Windows-помощник 1.1.1
+          tag_name: alice-cloud-v1.2.0
+          name: Wake Mini — Алиса и Windows-помощник 1.2.0
           target_commitish: ${{ github.sha }}
           make_latest: false
           body: |
-            Добавлены команды Алисы для перезагрузки и спящего режима. Состояние компьютера проверяется подписанным ответом WakeMiniAgent.
-            В релизе два файла: ZIP облачной функции и обновлённый WakeMiniAgent.exe. APK Android 1.1.1 не менялся.
+            Добавлены запуск выбранного приложения голосом и режим работы Windows-помощника в трее.
+            В релизе два файла: ZIP облачной функции и обновлённый WakeMiniAgent.exe. APK Android не менялся.
             Настройка обновления облачной функции: alice-cloud/README.md.
           files: |
-            WakeMini-Alice-Cloud-1.1.1.zip
+            WakeMini-Alice-Cloud-1.2.0.zip
             publish/win-x64/WakeMiniAgent.exe
           fail_on_unmatched_files: true

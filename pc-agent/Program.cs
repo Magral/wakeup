@@ -5,72 +5,89 @@ using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using System.Windows.Forms;
 
 internal static class Program
 {
     private const int Port = 3000;
-    private sealed record Challenge(long ExpiresAt, IPEndPoint RemoteEndPoint);
     private static readonly ConcurrentDictionary<string, Challenge> Challenges = new();
+    private static readonly object LogLock = new();
 
     [DllImport("PowrProf.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetSuspendState(bool hibernate, bool forceCritical, bool disableWakeEvent);
 
-    private static async Task<int> Main(string[] args)
+    [STAThread]
+    private static int Main(string[] args)
     {
+        ApplicationConfiguration.Initialize();
         if (args.Length > 0 && args[0] == "--install-firewall") return InstallFirewallRule();
 
-        var keyPath = Path.Combine(AppContext.BaseDirectory, "wake.key");
-        var newKey = !File.Exists(keyPath);
+        var baseDirectory = AppContext.BaseDirectory;
         byte[] key;
-        if (newKey)
+        try { key = LoadOrCreateKey(baseDirectory); }
+        catch (Exception ex)
         {
-            key = RandomNumberGenerator.GetBytes(32);
-            File.WriteAllText(keyPath, Convert.ToHexString(key));
+            MessageBox.Show(ex.Message, "Wake Mini", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return 2;
+        }
+
+        using var stop = new CancellationTokenSource();
+        var serverTask = RunServerAsync(baseDirectory, key, stop.Token);
+        using var tray = new AgentTrayContext(baseDirectory);
+        Application.Run(tray);
+        stop.Cancel();
+        try { serverTask.GetAwaiter().GetResult(); } catch (OperationCanceledException) { }
+        return 0;
+    }
+
+    private static byte[] LoadOrCreateKey(string baseDirectory)
+    {
+        var keyPath = Path.Combine(baseDirectory, "wake.key");
+        if (!File.Exists(keyPath))
+        {
+            var key = RandomNumberGenerator.GetBytes(32);
+            var text = Convert.ToHexString(key);
+            File.WriteAllText(keyPath, text);
             try { File.SetAttributes(keyPath, File.GetAttributes(keyPath) | FileAttributes.Hidden); } catch { }
-            Console.ForegroundColor = ConsoleColor.Yellow;
-            Console.WriteLine("Создан ключ помощника. Введите его в Wake Mini на телефоне:");
-            Console.ForegroundColor = ConsoleColor.Cyan;
-            Console.WriteLine(Convert.ToHexString(key));
-            Console.ResetColor();
-            Console.WriteLine("Не отправляйте и не публикуйте этот ключ.");
-        }
-        else
-        {
-            try { key = Convert.FromHexString(File.ReadAllText(keyPath).Trim()); }
-            catch
-            {
-                Console.Error.WriteLine("Файл wake.key повреждён. Удалите его и запустите помощник снова, чтобы создать новый ключ.");
-                return 2;
-            }
-            if (key.Length != 32)
-            {
-                Console.Error.WriteLine("В wake.key должен быть ключ из 64 шестнадцатеричных символов.");
-                return 2;
-            }
-            Console.WriteLine("Используется ключ из wake.key. На телефоне должен быть указан тот же ключ.");
+            MessageBox.Show(
+                "Создан ключ помощника. Введите его в Wake Mini на телефоне:\n\n" + text +
+                "\n\nНе отправляйте и не публикуйте этот ключ.",
+                "Wake Mini — новый ключ", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            return key;
         }
 
-        Console.WriteLine($"Wake Mini Agent слушает UDP-порт {Port}. Оставьте это окно открытым или добавьте программу в автозагрузку.");
-        Console.WriteLine("Остановка помощника: Ctrl+C.");
+        byte[] existing;
+        try { existing = Convert.FromHexString(File.ReadAllText(keyPath).Trim()); }
+        catch { throw new InvalidOperationException("Файл wake.key повреждён. Удалите его и запустите помощник снова, чтобы создать новый ключ."); }
+        if (existing.Length != 32)
+            throw new InvalidOperationException("В wake.key должен быть ключ из 64 шестнадцатеричных символов.");
+        return existing;
+    }
 
+    private static async Task RunServerAsync(string baseDirectory, byte[] key, CancellationToken cancellationToken)
+    {
         try
         {
             using var udp = new UdpClient(new IPEndPoint(IPAddress.Any, Port));
-            while (true)
+            Log(baseDirectory, $"UDP-порт {Port} открыт; помощник работает в трее.");
+            while (!cancellationToken.IsCancellationRequested)
             {
-                var datagram = await udp.ReceiveAsync();
-                _ = HandleDatagramAsync(udp, datagram, key);
+                var datagram = await udp.ReceiveAsync(cancellationToken);
+                _ = HandleDatagramAsync(udp, datagram, baseDirectory, key);
             }
         }
+        catch (OperationCanceledException) { }
         catch (SocketException ex)
         {
-            Console.Error.WriteLine($"Не удалось открыть UDP-порт {Port}: {ex.Message}");
-            return 3;
+            Log(baseDirectory, $"Не удалось открыть UDP-порт {Port}: {ex.Message}");
+            MessageBox.Show($"Не удалось открыть UDP-порт {Port}. Проверьте, не запущена ли другая копия Wake Mini.",
+                "Wake Mini", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
     }
 
-    private static async Task HandleDatagramAsync(UdpClient udp, UdpReceiveResult datagram, byte[] key)
+    private static async Task HandleDatagramAsync(UdpClient udp, UdpReceiveResult datagram, string baseDirectory, byte[] key)
     {
         try
         {
@@ -90,13 +107,22 @@ internal static class Program
             if (!Challenges.TryRemove(fields[2], out var challenge)
                 || DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() > challenge.ExpiresAt
                 || !challenge.RemoteEndPoint.Equals(datagram.RemoteEndPoint)) return;
+
             var command = fields[1];
             if (!Verify(key, $"{command}|{fields[2]}", fields[3])) return;
 
-            var replyVerb = command + "_ACCEPTED";
-            var ack = $"WM1|{replyVerb}|{fields[2]}|{Sign(key, $"{replyVerb}|{fields[2]}")}";
-            await SendAsync(udp, ack, datagram.RemoteEndPoint);
+            if (command == "LAUNCH")
+            {
+                var replyVerb = LaunchApplication(baseDirectory, out var error)
+                    ? "LAUNCH_ACCEPTED"
+                    : error == "not_configured" ? "LAUNCH_NOT_CONFIGURED" : "LAUNCH_FAILED";
+                if (error is not null && error != "not_configured") Log(baseDirectory, $"Не удалось запустить приложение: {error}");
+                await SendAsync(udp, SignedReply(key, replyVerb, fields[2]), datagram.RemoteEndPoint);
+                if (replyVerb == "LAUNCH_ACCEPTED") Log(baseDirectory, "Запущено приложение из локальных настроек.");
+                return;
+            }
 
+            await SendAsync(udp, SignedReply(key, command + "_ACCEPTED", fields[2]), datagram.RemoteEndPoint);
             var description = command switch
             {
                 "SHUTDOWN" => "выключения",
@@ -104,14 +130,14 @@ internal static class Program
                 "SLEEP" => "спящего режима",
                 _ => "команды"
             };
-            Console.WriteLine($"{DateTime.Now:T}: принята команда {description}.");
+            Log(baseDirectory, $"Принята команда {description}.");
             _ = Task.Run(async () =>
             {
                 await Task.Delay(500);
                 if (command == "SLEEP")
                 {
                     if (!SetSuspendState(false, false, false))
-                        Console.Error.WriteLine($"Не удалось включить спящий режим Windows: код {Marshal.GetLastWin32Error()}.");
+                        Log(baseDirectory, $"Не удалось включить спящий режим Windows: код {Marshal.GetLastWin32Error()}.");
                     return;
                 }
 
@@ -125,7 +151,37 @@ internal static class Program
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"Ошибка обработки пакета: {ex.Message}");
+            Log(baseDirectory, $"Ошибка обработки UDP-пакета: {ex.Message}");
+        }
+    }
+
+    private static bool LaunchApplication(string baseDirectory, out string? error)
+    {
+        error = null;
+        var settings = ReadSettings(baseDirectory);
+        var path = settings.LaunchPath?.Trim();
+        if (string.IsNullOrEmpty(path) || !Path.IsPathFullyQualified(path) || !File.Exists(path)
+            || !string.Equals(Path.GetExtension(path), ".exe", StringComparison.OrdinalIgnoreCase))
+        {
+            error = "not_configured";
+            return false;
+        }
+
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = path,
+                Arguments = settings.LaunchArguments ?? "",
+                WorkingDirectory = Path.GetDirectoryName(path) ?? baseDirectory,
+                UseShellExecute = true
+            });
+            return true;
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+            return false;
         }
     }
 
@@ -145,7 +201,10 @@ internal static class Program
     private static bool IsNonce(string value) => value.Length == 32 && value.All(Uri.IsHexDigit);
 
     private static bool IsAllowedCommand(string command) =>
-        command is "SHUTDOWN" or "RESTART" or "SLEEP";
+        command is "SHUTDOWN" or "RESTART" or "SLEEP" or "LAUNCH";
+
+    private static string SignedReply(byte[] key, string verb, string nonce) =>
+        $"WM1|{verb}|{nonce}|{Sign(key, $"{verb}|{nonce}")}";
 
     private static string Sign(byte[] key, string message)
     {
@@ -164,6 +223,36 @@ internal static class Program
         catch { return false; }
     }
 
+    private static string SettingsPath(string baseDirectory) => Path.Combine(baseDirectory, "wake-actions.json");
+
+    private static AgentSettings ReadSettings(string baseDirectory)
+    {
+        try
+        {
+            return File.Exists(SettingsPath(baseDirectory))
+                ? JsonSerializer.Deserialize<AgentSettings>(File.ReadAllText(SettingsPath(baseDirectory))) ?? new AgentSettings()
+                : new AgentSettings();
+        }
+        catch (Exception ex)
+        {
+            Log(baseDirectory, $"Не удалось прочитать wake-actions.json: {ex.Message}");
+            return new AgentSettings();
+        }
+    }
+
+    private static void SaveSettings(string baseDirectory, AgentSettings settings) =>
+        File.WriteAllText(SettingsPath(baseDirectory), JsonSerializer.Serialize(settings, new JsonSerializerOptions { WriteIndented = true }));
+
+    private static void Log(string baseDirectory, string message)
+    {
+        try
+        {
+            lock (LogLock)
+                File.AppendAllText(Path.Combine(baseDirectory, "WakeMiniAgent.log"), $"{DateTime.Now:yyyy-MM-dd HH:mm:ss} {message}{Environment.NewLine}");
+        }
+        catch { }
+    }
+
     private static int InstallFirewallRule()
     {
         try
@@ -176,13 +265,183 @@ internal static class Program
             };
             using var process = Process.Start(command);
             process!.WaitForExit();
-            Console.WriteLine(process.ExitCode == 0 ? "Правило брандмауэра добавлено." : "Не удалось добавить правило брандмауэра.");
+            MessageBox.Show(process.ExitCode == 0 ? "Правило брандмауэра добавлено." : "Не удалось добавить правило брандмауэра.",
+                "Wake Mini", MessageBoxButtons.OK, process.ExitCode == 0 ? MessageBoxIcon.Information : MessageBoxIcon.Warning);
             return process.ExitCode;
         }
         catch (Exception ex)
         {
-            Console.Error.WriteLine($"Не удалось настроить Брандмауэр Windows: {ex.Message}");
+            MessageBox.Show($"Не удалось настроить Брандмауэр Windows: {ex.Message}", "Wake Mini", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return 4;
+        }
+    }
+
+    private sealed record Challenge(long ExpiresAt, IPEndPoint RemoteEndPoint);
+
+    private sealed class AgentSettings
+    {
+        public string? LaunchPath { get; set; }
+        public string? LaunchArguments { get; set; }
+        public bool LaunchOnStartup { get; set; }
+    }
+
+    private sealed class AgentTrayContext : ApplicationContext
+    {
+        private readonly string _baseDirectory;
+        private readonly NotifyIcon _tray;
+        private readonly ToolStripMenuItem _launchNow;
+        private readonly ToolStripMenuItem _autoLaunch;
+        private bool _refreshingMenu;
+
+        public AgentTrayContext(string baseDirectory)
+        {
+            _baseDirectory = baseDirectory;
+            var menu = new ContextMenuStrip();
+            menu.Items.Add(new ToolStripMenuItem("Wake Mini работает") { Enabled = false });
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(new ToolStripMenuItem("Настроить приложение…", null, (_, _) => ConfigureApplication()));
+            _launchNow = new ToolStripMenuItem("Запустить приложение сейчас", null, (_, _) => LaunchFromTray());
+            menu.Items.Add(_launchNow);
+            _autoLaunch = new ToolStripMenuItem("Запускать приложение при входе в Windows") { CheckOnClick = true };
+            _autoLaunch.CheckedChanged += (_, _) =>
+            {
+                if (!_refreshingMenu) SaveAutoLaunchSetting();
+            };
+            menu.Items.Add(_autoLaunch);
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(new ToolStripMenuItem("Открыть папку Wake Mini", null, (_, _) => OpenFolder()));
+            menu.Items.Add(new ToolStripMenuItem("Выход", null, (_, _) => ExitThread()));
+
+            _tray = new NotifyIcon
+            {
+                Icon = SystemIcons.Application,
+                Text = "Wake Mini — помощник работает",
+                ContextMenuStrip = menu,
+                Visible = true
+            };
+            _tray.DoubleClick += (_, _) => ConfigureApplication();
+            RefreshMenu();
+            StartConfiguredAppIfNeeded();
+        }
+
+        private void RefreshMenu()
+        {
+            var settings = ReadSettings(_baseDirectory);
+            _refreshingMenu = true;
+            _autoLaunch.Checked = settings.LaunchOnStartup;
+            _refreshingMenu = false;
+            _launchNow.Enabled = !string.IsNullOrWhiteSpace(settings.LaunchPath) && File.Exists(settings.LaunchPath);
+        }
+
+        private void SaveAutoLaunchSetting()
+        {
+            var settings = ReadSettings(_baseDirectory);
+            settings.LaunchOnStartup = _autoLaunch.Checked;
+            if (settings.LaunchOnStartup && string.IsNullOrWhiteSpace(settings.LaunchPath))
+            {
+                _refreshingMenu = true;
+                _autoLaunch.Checked = false;
+                _refreshingMenu = false;
+                MessageBox.Show("Сначала выберите приложение в настройках Wake Mini.", "Wake Mini", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            try { SaveSettings(_baseDirectory, settings); }
+            catch (Exception ex) { MessageBox.Show($"Не удалось сохранить настройки: {ex.Message}", "Wake Mini", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+        }
+
+        private void ConfigureApplication()
+        {
+            var settings = ReadSettings(_baseDirectory);
+            using var form = new Form
+            {
+                Text = "Wake Mini — запуск приложения",
+                Width = 620,
+                Height = 255,
+                FormBorderStyle = FormBorderStyle.FixedDialog,
+                StartPosition = FormStartPosition.CenterScreen,
+                MaximizeBox = false,
+                MinimizeBox = false
+            };
+            var pathLabel = new Label { Text = "Приложение (.exe):", Left = 12, Top = 15, Width = 150 };
+            var pathBox = new TextBox { Left = 12, Top = 38, Width = 485, Text = settings.LaunchPath ?? "" };
+            var browse = new Button { Text = "Обзор…", Left = 505, Top = 36, Width = 85 };
+            browse.Click += (_, _) =>
+            {
+                using var picker = new OpenFileDialog { Filter = "Программы Windows (*.exe)|*.exe", CheckFileExists = true };
+                if (picker.ShowDialog(form) == DialogResult.OK) pathBox.Text = picker.FileName;
+            };
+            var argsLabel = new Label { Text = "Параметры запуска (необязательно):", Left = 12, Top = 78, Width = 300 };
+            var argsBox = new TextBox { Left = 12, Top = 101, Width = 578, Text = settings.LaunchArguments ?? "" };
+            var autoStart = new CheckBox { Text = "Запускать это приложение при входе в Windows", Left = 12, Top = 137, Width = 400, Checked = settings.LaunchOnStartup };
+            var save = new Button { Text = "Сохранить", Left = 410, Top = 176, Width = 85, DialogResult = DialogResult.OK };
+            var cancel = new Button { Text = "Отмена", Left = 505, Top = 176, Width = 85, DialogResult = DialogResult.Cancel };
+            form.Controls.AddRange(new Control[] { pathLabel, pathBox, browse, argsLabel, argsBox, autoStart, save, cancel });
+            form.AcceptButton = save;
+            form.CancelButton = cancel;
+
+            if (form.ShowDialog() != DialogResult.OK) return;
+            var path = pathBox.Text.Trim();
+            if (path.Length > 0 && (!Path.IsPathFullyQualified(path) || !File.Exists(path)
+                || !string.Equals(Path.GetExtension(path), ".exe", StringComparison.OrdinalIgnoreCase)))
+            {
+                MessageBox.Show("Выберите существующий файл .exe.", "Wake Mini", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            if (autoStart.Checked && path.Length == 0)
+            {
+                MessageBox.Show("Для автозапуска сначала выберите приложение.", "Wake Mini", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+            settings.LaunchPath = path.Length == 0 ? null : Path.GetFullPath(path);
+            settings.LaunchArguments = argsBox.Text;
+            settings.LaunchOnStartup = autoStart.Checked;
+            try
+            {
+                SaveSettings(_baseDirectory, settings);
+                RefreshMenu();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Не удалось сохранить настройки: {ex.Message}", "Wake Mini", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void LaunchFromTray()
+        {
+            if (!LaunchApplication(_baseDirectory, out var error))
+                MessageBox.Show(error == "not_configured" ? "Сначала выберите приложение в настройках Wake Mini." : $"Не удалось запустить приложение: {error}",
+                    "Wake Mini", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+
+        private void StartConfiguredAppIfNeeded()
+        {
+            var settings = ReadSettings(_baseDirectory);
+            if (!settings.LaunchOnStartup) return;
+            var timer = new System.Windows.Forms.Timer { Interval = 2500 };
+            timer.Tick += (_, _) =>
+            {
+                timer.Stop();
+                timer.Dispose();
+                if (!LaunchApplication(_baseDirectory, out var error))
+                {
+                    Log(_baseDirectory, error == "not_configured" ? "Автозапуск пропущен: приложение не настроено." : $"Ошибка автозапуска: {error}");
+                    _tray.ShowBalloonTip(4000, "Wake Mini", "Не удалось запустить выбранное приложение. Проверьте настройки.", ToolTipIcon.Warning);
+                }
+            };
+            timer.Start();
+        }
+
+        private void OpenFolder()
+        {
+            try { Process.Start(new ProcessStartInfo("explorer.exe", _baseDirectory) { UseShellExecute = true }); }
+            catch (Exception ex) { MessageBox.Show(ex.Message, "Wake Mini", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+        }
+
+        protected override void ExitThreadCore()
+        {
+            _tray.Visible = false;
+            _tray.Dispose();
+            base.ExitThreadCore();
         }
     }
 }

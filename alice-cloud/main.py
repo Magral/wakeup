@@ -14,9 +14,11 @@ CAPABILITY = 'devices.capabilities.on_off'
 DEVICE_ID = 'wakemini-pc'
 RESTART_DEVICE_ID = 'wakemini-restart'
 SLEEP_DEVICE_ID = 'wakemini-sleep'
+APP_DEVICE_ID = 'wakemini-app'
 COMMANDS = {
     RESTART_DEVICE_ID: 'RESTART',
     SLEEP_DEVICE_ID: 'SLEEP',
+    APP_DEVICE_ID: 'LAUNCH',
 }
 LOG = logging.getLogger(__name__)
 
@@ -81,7 +83,7 @@ def power_on(cfg):
 
 
 def agent_command(cfg, command):
-    if command not in ('SHUTDOWN', 'RESTART', 'SLEEP'):
+    if command not in ('SHUTDOWN', 'RESTART', 'SLEEP', 'LAUNCH'):
         raise ValueError('Unsupported agent command')
     nonce = secrets.token_hex(16)
     ip = socket.gethostbyname(cfg['PC_HOST'])
@@ -98,8 +100,13 @@ def agent_command(cfg, command):
             packet = 'WM1|' + message + '|' + sign(cfg['key'], message)
             sock.send(packet.encode('ascii'))
             reply = sock.recv(256)
-            if not validate_reply(reply, command + '_ACCEPTED', nonce, cfg['key']):
-                raise DeviceError('INTERNAL_ERROR', 'Подтверждение команды не прошло проверку.')
+            if validate_reply(reply, command + '_ACCEPTED', nonce, cfg['key']):
+                return
+            if command == 'LAUNCH' and validate_reply(reply, 'LAUNCH_NOT_CONFIGURED', nonce, cfg['key']):
+                raise DeviceError('INVALID_ACTION', 'Сначала выберите приложение в настройках Wake Mini на компьютере.')
+            if command == 'LAUNCH' and validate_reply(reply, 'LAUNCH_FAILED', nonce, cfg['key']):
+                raise DeviceError('INTERNAL_ERROR', 'Windows не удалось запустить выбранное приложение.')
+            raise DeviceError('INTERNAL_ERROR', 'Подтверждение команды не прошло проверку.')
         except (socket.timeout, ConnectionRefusedError):
             # Never wake a PC in response to an agent command or retry it.
             raise DeviceError('DEVICE_UNREACHABLE', 'Помощник не ответил. ПК может быть выключен или недоступен по сети.') from None
@@ -139,7 +146,7 @@ def dispatch(event):
     LOG.info('smart_home type=%s request_id=%s', str(kind)[:20], json.dumps(request_id))
     answer = {'request_id': request_id}
     if kind == 'discovery':
-        info = {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.1.1'}
+        info = {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.2.0'}
         answer['payload'] = {'user_id': user_id, 'devices': [
             {'id': DEVICE_ID, 'name': 'Компьютер', 'type': 'devices.types.other',
              'description': 'Включение, выключение и проверка связи с Windows',
@@ -151,6 +158,10 @@ def dispatch(event):
              'device_info': info},
             {'id': SLEEP_DEVICE_ID, 'name': 'Спящий режим компьютера', 'type': 'devices.types.other',
              'description': 'Однократная команда перевода Windows в спящий режим',
+             'capabilities': [{'type': CAPABILITY, 'retrievable': False, 'reportable': False}],
+             'device_info': info},
+            {'id': APP_DEVICE_ID, 'name': 'Приложение на компьютере', 'type': 'devices.types.other',
+             'description': 'Запускает выбранное пользователем приложение Windows',
              'capabilities': [{'type': CAPABILITY, 'retrievable': False, 'reportable': False}],
              'device_info': info},
         ]}
