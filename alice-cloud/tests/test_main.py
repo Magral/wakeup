@@ -85,6 +85,30 @@ class Tests(unittest.TestCase):
             thread.join()
             self.assertEqual(failures, [])
 
+    def test_status_retries_safe_ping_once_after_packet_loss(self):
+        failures = []
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server:
+            server.bind(('127.0.0.1', 0))
+            server.settimeout(2)
+            cfg = main.settings() | {'port': server.getsockname()[1]}
+            def agent():
+                try:
+                    first, _ = server.recvfrom(256)
+                    second, remote = server.recvfrom(256)
+                    first_nonce = first.decode().split('|')[2]
+                    second_nonce = second.decode().split('|')[2]
+                    self.assertNotEqual(first_nonce, second_nonce)
+                    message = 'ONLINE|' + second_nonce
+                    response = 'WM1|' + message + '|' + main.sign(cfg['key'], message)
+                    server.sendto(response.encode(), remote)
+                except Exception as exc:
+                    failures.append(exc)
+            thread = threading.Thread(target=agent)
+            thread.start()
+            self.assertTrue(main.power_state(cfg))
+            thread.join()
+            self.assertEqual(failures, [])
+
     @patch('main.authorize')
     def test_on_and_off_are_separate(self, auth):
         with patch('main.power_on') as on, patch('main.power_off') as off:
@@ -154,7 +178,8 @@ class Tests(unittest.TestCase):
         self.assertEqual(results[1]['capabilities'], [])
         with patch('main.power_state', side_effect=main.DeviceError('DEVICE_UNREACHABLE', 'offline')):
             status = main.dispatch(event(kind='query'))['payload']['devices'][0]
-        self.assertEqual(status['error_code'], 'DEVICE_UNREACHABLE')
+        self.assertEqual(status['capabilities'][0]['state']['value'], False)
+        self.assertNotIn('error_code', status)
 
     @patch('main.authorize')
     def test_launch_not_configured_is_returned_as_action_error(self, auth):

@@ -82,34 +82,52 @@ def power_on(cfg):
             sock.sendto(packet, (ip, cfg['port']))
 
 
+def connect_agent(cfg, ip):
+    # A short retry for the idempotent PING absorbs a lost first UDP packet.
+    # Each attempt uses its own nonce and socket. Commands themselves are never retried.
+    for _ in range(2):
+        nonce = secrets.token_hex(16)
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        sock.settimeout(0.45)
+        try:
+            sock.connect((ip, cfg['port']))
+            sock.send(('WM1|PING|' + nonce).encode('ascii'))
+            reply = sock.recv(256)
+        except (socket.timeout, ConnectionRefusedError):
+            sock.close()
+            continue
+        except Exception:
+            sock.close()
+            raise
+        if not validate_reply(reply, 'ONLINE', nonce, cfg['key']):
+            sock.close()
+            raise DeviceError('INTERNAL_ERROR', 'Ответ Windows-помощника не прошёл проверку.')
+        return sock, nonce
+    raise DeviceError('DEVICE_UNREACHABLE', 'Windows-помощник не ответил после двух проверок связи.')
+
+
 def agent_command(cfg, command):
     if command not in ('SHUTDOWN', 'RESTART', 'SLEEP', 'LAUNCH'):
         raise ValueError('Unsupported agent command')
-    nonce = secrets.token_hex(16)
     ip = socket.gethostbyname(cfg['PC_HOST'])
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-        sock.settimeout(0.6)
-        # Same socket/endpoint for challenge and command, as required by Agent.
-        sock.connect((ip, cfg['port']))
+    sock, nonce = connect_agent(cfg, ip)
+    with sock:
+        sock.settimeout(0.75)
+        message = command + '|' + nonce
+        packet = 'WM1|' + message + '|' + sign(cfg['key'], message)
+        sock.send(packet.encode('ascii'))
         try:
-            sock.send(('WM1|PING|' + nonce).encode('ascii'))
             reply = sock.recv(256)
-            if not validate_reply(reply, 'ONLINE', nonce, cfg['key']):
-                raise DeviceError('INTERNAL_ERROR', 'Ключ Windows-помощника не совпадает.')
-            message = command + '|' + nonce
-            packet = 'WM1|' + message + '|' + sign(cfg['key'], message)
-            sock.send(packet.encode('ascii'))
-            reply = sock.recv(256)
-            if validate_reply(reply, command + '_ACCEPTED', nonce, cfg['key']):
-                return
-            if command == 'LAUNCH' and validate_reply(reply, 'LAUNCH_NOT_CONFIGURED', nonce, cfg['key']):
-                raise DeviceError('INVALID_ACTION', 'Сначала выберите приложение в настройках Wake Mini на компьютере.')
-            if command == 'LAUNCH' and validate_reply(reply, 'LAUNCH_FAILED', nonce, cfg['key']):
-                raise DeviceError('INTERNAL_ERROR', 'Windows не удалось запустить выбранное приложение.')
-            raise DeviceError('INTERNAL_ERROR', 'Подтверждение команды не прошло проверку.')
         except (socket.timeout, ConnectionRefusedError):
-            # Never wake a PC in response to an agent command or retry it.
-            raise DeviceError('DEVICE_UNREACHABLE', 'Помощник не ответил. ПК может быть выключен или недоступен по сети.') from None
+            # Do not retry a command: Windows may have accepted it and only lost the acknowledgement.
+            raise DeviceError('DEVICE_UNREACHABLE', 'Windows-помощник не подтвердил команду.') from None
+        if validate_reply(reply, command + '_ACCEPTED', nonce, cfg['key']):
+            return
+        if command == 'LAUNCH' and validate_reply(reply, 'LAUNCH_NOT_CONFIGURED', nonce, cfg['key']):
+            raise DeviceError('INVALID_ACTION', 'Сначала выберите приложение в настройках Wake Mini на компьютере.')
+        if command == 'LAUNCH' and validate_reply(reply, 'LAUNCH_FAILED', nonce, cfg['key']):
+            raise DeviceError('INTERNAL_ERROR', 'Windows не удалось запустить выбранное приложение.')
+        raise DeviceError('INTERNAL_ERROR', 'Подтверждение команды не прошло проверку.')
 
 
 def power_off(cfg):
@@ -117,23 +135,12 @@ def power_off(cfg):
 
 
 def power_state(cfg):
-    # The signed challenge response is enough to confirm that Windows and the
-    # helper are awake. Older helpers already support PING, so status remains
-    # compatible while restart/sleep require the updated helper.
-    nonce = secrets.token_hex(16)
+    # The signed challenge response confirms the helper is awake. The query
+    # handler reports no response as "off" so Alice keeps the wake command usable.
     ip = socket.gethostbyname(cfg['PC_HOST'])
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-        sock.settimeout(0.6)
-        sock.connect((ip, cfg['port']))
-        try:
-            sock.send(('WM1|PING|' + nonce).encode('ascii'))
-            reply = sock.recv(256)
-            if not validate_reply(reply, 'ONLINE', nonce, cfg['key']):
-                raise DeviceError('INTERNAL_ERROR', 'Ответ Windows-помощника не прошёл проверку.')
-            return True
-        except (socket.timeout, ConnectionRefusedError):
-            raise DeviceError('DEVICE_UNREACHABLE', 'Помощник не ответил. ПК может быть выключен или недоступен по сети.') from None
-
+    sock, _ = connect_agent(cfg, ip)
+    sock.close()
+    return True
 
 def dispatch(event):
     if not isinstance(event, dict):
@@ -146,7 +153,7 @@ def dispatch(event):
     LOG.info('smart_home type=%s request_id=%s', str(kind)[:20], json.dumps(request_id))
     answer = {'request_id': request_id}
     if kind == 'discovery':
-        info = {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.2.0'}
+        info = {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.2.3'}
         answer['payload'] = {'user_id': user_id, 'devices': [
             {'id': DEVICE_ID, 'name': 'Компьютер', 'type': 'devices.types.other',
              'description': 'Включение, выключение и проверка связи с Windows',
@@ -186,9 +193,12 @@ def dispatch(event):
                 try:
                     result['capabilities'] = [{'type': CAPABILITY, 'state': {'instance': 'on', 'value': power_state(cfg)}}]
                 except DeviceError as exc:
-                    result.update(error_code=exc.code, error_message=exc.message)
+                    if exc.code == 'DEVICE_UNREACHABLE':
+                        result['capabilities'] = [{'type': CAPABILITY, 'state': {'instance': 'on', 'value': False}}]
+                    else:
+                        result.update(error_code=exc.code, error_message=exc.message)
                 except OSError:
-                    result.update(error_code='DEVICE_UNREACHABLE')
+                    result['capabilities'] = [{'type': CAPABILITY, 'state': {'instance': 'on', 'value': False}}]
             results.append(result)
         answer['payload'] = {'devices': results}
         return answer
