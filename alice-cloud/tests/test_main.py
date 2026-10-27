@@ -148,6 +148,16 @@ class Tests(unittest.TestCase):
         response.__enter__.return_value.read.return_value = json.dumps({'id': '123', 'login': 'owner', 'client_id': 'client'})
         with patch('main.urlopen', return_value=response): main.authorize('Bearer token', main.settings())
 
+    def test_valid_yandex_identity_is_cached_briefly(self):
+        main._AUTH_CACHE.clear()
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps(
+            {'id': 'cached-user', 'login': 'owner', 'client_id': 'client'})
+        with patch('main.urlopen', return_value=response) as open_url:
+            self.assertEqual(main.authorize('Bearer cached-test-token', main.settings()), 'cached-user')
+            self.assertEqual(main.authorize('Bearer cached-test-token', main.settings()), 'cached-user')
+        open_url.assert_called_once()
+
     def test_bad_hmac_rejected(self):
         self.assertFalse(main.validate_reply(b'WM1|ONLINE|nonce|bad', 'ONLINE', 'nonce', bytes(32)))
 

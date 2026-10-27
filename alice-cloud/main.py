@@ -8,6 +8,7 @@ import os
 import re
 import secrets
 import socket
+import time
 from urllib.request import Request, urlopen
 
 CAPABILITY = 'devices.capabilities.on_off'
@@ -21,6 +22,8 @@ COMMANDS = {
     APP_DEVICE_ID: 'LAUNCH',
 }
 LOG = logging.getLogger(__name__)
+_AUTH_CACHE = {}
+_AUTH_CACHE_TTL_SECONDS = 20
 
 
 class DeviceError(Exception):
@@ -48,17 +51,34 @@ def authorize(header, cfg):
     token = header[7:]
     if not token or len(token) > 2048 or any(c.isspace() for c in token):
         raise PermissionError('Invalid authorization')
+
+    # Cache only a successful identity match for this exact token and account
+    # for a short time; retain its hash, never the OAuth token itself.
+    cache_key = (hashlib.sha256(token.encode('utf-8')).digest(),
+                 cfg['YANDEX_LOGIN'].casefold(), cfg['OAUTH_CLIENT_ID'])
+    now = time.monotonic()
+    cached = _AUTH_CACHE.get(cache_key)
+    if cached and cached[0] > now:
+        return cached[1]
+
     request = Request('https://login.yandex.ru/info?format=json',
                       headers={'Authorization': 'OAuth ' + token})
     try:
-        with urlopen(request, timeout=0.8) as response:
+        with urlopen(request, timeout=1.0) as response:
             user = json.load(response)
     except Exception:
         raise PermissionError('Authorization unavailable') from None
     if str(user.get('login', '')).casefold() != cfg['YANDEX_LOGIN'].casefold() or user.get('client_id') != cfg['OAUTH_CLIENT_ID']:
         raise PermissionError('Account not allowed')
-    return str(user['id'])
+    user_id = str(user['id'])
 
+    for key, (expires, _) in list(_AUTH_CACHE.items()):
+        if expires <= now:
+            _AUTH_CACHE.pop(key, None)
+    _AUTH_CACHE[cache_key] = (time.monotonic() + _AUTH_CACHE_TTL_SECONDS, user_id)
+    while len(_AUTH_CACHE) > 64:
+        _AUTH_CACHE.pop(next(iter(_AUTH_CACHE)))
+    return user_id
 
 def sign(key, message):
     return hmac.new(key, message.encode('ascii'), hashlib.sha256).hexdigest()
@@ -153,7 +173,7 @@ def dispatch(event):
     LOG.info('smart_home type=%s request_id=%s', str(kind)[:20], json.dumps(request_id))
     answer = {'request_id': request_id}
     if kind == 'discovery':
-        info = {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.2.3'}
+        info = {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.2.4'}
         answer['payload'] = {'user_id': user_id, 'devices': [
             {'id': DEVICE_ID, 'name': 'Компьютер', 'type': 'devices.types.other',
              'description': 'Включение, выключение и проверка связи с Windows',
