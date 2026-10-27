@@ -81,7 +81,7 @@ def power_on(cfg):
 
 
 def agent_command(cfg, command):
-    if command not in ('SHUTDOWN', 'RESTART', 'SLEEP', 'STATUS'):
+    if command not in ('SHUTDOWN', 'RESTART', 'SLEEP'):
         raise ValueError('Unsupported agent command')
     nonce = secrets.token_hex(16)
     ip = socket.gethostbyname(cfg['PC_HOST'])
@@ -98,10 +98,6 @@ def agent_command(cfg, command):
             packet = 'WM1|' + message + '|' + sign(cfg['key'], message)
             sock.send(packet.encode('ascii'))
             reply = sock.recv(256)
-            if command == 'STATUS':
-                if not validate_reply(reply, 'STATUS_ONLINE', nonce, cfg['key']):
-                    raise DeviceError('INTERNAL_ERROR', 'Ответ помощника не прошёл проверку.')
-                return True
             if not validate_reply(reply, command + '_ACCEPTED', nonce, cfg['key']):
                 raise DeviceError('INTERNAL_ERROR', 'Подтверждение команды не прошло проверку.')
         except (socket.timeout, ConnectionRefusedError):
@@ -114,7 +110,22 @@ def power_off(cfg):
 
 
 def power_state(cfg):
-    return agent_command(cfg, 'STATUS')
+    # The signed challenge response is enough to confirm that Windows and the
+    # helper are awake. Older helpers already support PING, so status remains
+    # compatible while restart/sleep require the updated helper.
+    nonce = secrets.token_hex(16)
+    ip = socket.gethostbyname(cfg['PC_HOST'])
+    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+        sock.settimeout(0.6)
+        sock.connect((ip, cfg['port']))
+        try:
+            sock.send(('WM1|PING|' + nonce).encode('ascii'))
+            reply = sock.recv(256)
+            if not validate_reply(reply, 'ONLINE', nonce, cfg['key']):
+                raise DeviceError('INTERNAL_ERROR', 'Ответ Windows-помощника не прошёл проверку.')
+            return True
+        except (socket.timeout, ConnectionRefusedError):
+            raise DeviceError('DEVICE_UNREACHABLE', 'Помощник не ответил. ПК может быть выключен или недоступен по сети.') from None
 
 
 def dispatch(event):
@@ -128,7 +139,7 @@ def dispatch(event):
     LOG.info('smart_home type=%s request_id=%s', str(kind)[:20], json.dumps(request_id))
     answer = {'request_id': request_id}
     if kind == 'discovery':
-        info = {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.1.0'}
+        info = {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.1.1'}
         answer['payload'] = {'user_id': user_id, 'devices': [
             {'id': DEVICE_ID, 'name': 'Компьютер', 'type': 'devices.types.other',
              'description': 'Включение, выключение и проверка связи с Windows',

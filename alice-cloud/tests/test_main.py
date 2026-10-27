@@ -36,7 +36,7 @@ class Tests(unittest.TestCase):
                 self.assertEqual(packet, b'\xff' * 6 + bytes.fromhex('001122aabbcc') * 16)
 
     def test_commands_interoperate_over_real_udp(self):
-        for command in ('SHUTDOWN', 'RESTART', 'SLEEP', 'STATUS'):
+        for command in ('SHUTDOWN', 'RESTART', 'SLEEP'):
             failures = []
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server:
                 server.bind(('127.0.0.1', 0))
@@ -51,7 +51,7 @@ class Tests(unittest.TestCase):
                         packet, same_remote = server.recvfrom(256)
                         self.assertEqual(remote, same_remote)
                         self.assertEqual(packet.decode(), 'WM1|' + command + '|' + nonce + '|' + main.sign(cfg['key'], command + '|' + nonce))
-                        verb = 'STATUS_ONLINE' if command == 'STATUS' else command + '_ACCEPTED'
+                        verb = command + '_ACCEPTED'
                         msg = verb + '|' + nonce
                         server.sendto(('WM1|' + msg + '|' + main.sign(cfg['key'], msg)).encode(), remote)
                     except Exception as exc:
@@ -61,7 +61,29 @@ class Tests(unittest.TestCase):
                 result = main.agent_command(cfg, command)
                 thread.join()
                 self.assertEqual(failures, [])
-                self.assertEqual(result, True if command == 'STATUS' else None)
+                self.assertIsNone(result)
+
+    def test_status_uses_existing_signed_ping(self):
+        failures = []
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server:
+            server.bind(('127.0.0.1', 0))
+            server.settimeout(2)
+            cfg = main.settings() | {'port': server.getsockname()[1]}
+            def agent():
+                try:
+                    ping, remote = server.recvfrom(256)
+                    fields = ping.decode().split('|')
+                    self.assertEqual(fields[:2], ['WM1', 'PING'])
+                    msg = 'ONLINE|' + fields[2]
+                    response = 'WM1|' + msg + '|' + main.sign(cfg['key'], msg)
+                    server.sendto(response.encode(), remote)
+                except Exception as exc:
+                    failures.append(exc)
+            thread = threading.Thread(target=agent)
+            thread.start()
+            self.assertTrue(main.power_state(cfg))
+            thread.join()
+            self.assertEqual(failures, [])
 
     @patch('main.authorize')
     def test_on_and_off_are_separate(self, auth):

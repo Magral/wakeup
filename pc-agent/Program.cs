@@ -93,10 +93,9 @@ internal static class Program
             var command = fields[1];
             if (!Verify(key, $"{command}|{fields[2]}", fields[3])) return;
 
-            var replyVerb = command == "STATUS" ? "STATUS_ONLINE" : command + "_ACCEPTED";
+            var replyVerb = command + "_ACCEPTED";
             var ack = $"WM1|{replyVerb}|{fields[2]}|{Sign(key, $"{replyVerb}|{fields[2]}")}";
             await SendAsync(udp, ack, datagram.RemoteEndPoint);
-            if (command == "STATUS") return;
 
             var description = command switch
             {
@@ -146,7 +145,7 @@ internal static class Program
     private static bool IsNonce(string value) => value.Length == 32 && value.All(Uri.IsHexDigit);
 
     private static bool IsAllowedCommand(string command) =>
-        command is "SHUTDOWN" or "RESTART" or "SLEEP" or "STATUS";
+        command is "SHUTDOWN" or "RESTART" or "SLEEP";
 
     private static string Sign(byte[] key, string message)
     {
