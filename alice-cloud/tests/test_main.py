@@ -35,30 +35,33 @@ class Tests(unittest.TestCase):
                 packet, _ = receiver.recvfrom(256)
                 self.assertEqual(packet, b'\xff' * 6 + bytes.fromhex('001122aabbcc') * 16)
 
-    def test_shutdown_interoperability_over_real_udp(self):
-        failures = []
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server:
-            server.bind(('127.0.0.1', 0))
-            server.settimeout(2)
-            cfg = main.settings() | {'port': server.getsockname()[1]}
-            def agent():
-                try:
-                    ping, remote = server.recvfrom(256)
-                    nonce = ping.decode().split('|')[2]
-                    msg = 'ONLINE|' + nonce
-                    server.sendto(('WM1|' + msg + '|' + main.sign(cfg['key'], msg)).encode(), remote)
-                    command, same_remote = server.recvfrom(256)
-                    self.assertEqual(remote, same_remote)
-                    self.assertEqual(command.decode(), 'WM1|SHUTDOWN|' + nonce + '|' + main.sign(cfg['key'], 'SHUTDOWN|' + nonce))
-                    msg = 'SHUTDOWN_ACCEPTED|' + nonce
-                    server.sendto(('WM1|' + msg + '|' + main.sign(cfg['key'], msg)).encode(), remote)
-                except Exception as exc:
-                    failures.append(exc)
-            thread = threading.Thread(target=agent)
-            thread.start()
-            main.power_off(cfg)
-            thread.join()
-            self.assertEqual(failures, [])
+    def test_commands_interoperate_over_real_udp(self):
+        for command in ('SHUTDOWN', 'RESTART', 'SLEEP', 'STATUS'):
+            failures = []
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server:
+                server.bind(('127.0.0.1', 0))
+                server.settimeout(2)
+                cfg = main.settings() | {'port': server.getsockname()[1]}
+                def agent():
+                    try:
+                        ping, remote = server.recvfrom(256)
+                        nonce = ping.decode().split('|')[2]
+                        msg = 'ONLINE|' + nonce
+                        server.sendto(('WM1|' + msg + '|' + main.sign(cfg['key'], msg)).encode(), remote)
+                        packet, same_remote = server.recvfrom(256)
+                        self.assertEqual(remote, same_remote)
+                        self.assertEqual(packet.decode(), 'WM1|' + command + '|' + nonce + '|' + main.sign(cfg['key'], command + '|' + nonce))
+                        verb = 'STATUS_ONLINE' if command == 'STATUS' else command + '_ACCEPTED'
+                        msg = verb + '|' + nonce
+                        server.sendto(('WM1|' + msg + '|' + main.sign(cfg['key'], msg)).encode(), remote)
+                    except Exception as exc:
+                        failures.append(exc)
+                thread = threading.Thread(target=agent)
+                thread.start()
+                result = main.agent_command(cfg, command)
+                thread.join()
+                self.assertEqual(failures, [])
+                self.assertEqual(result, True if command == 'STATUS' else None)
 
     @patch('main.authorize')
     def test_on_and_off_are_separate(self, auth):
@@ -68,6 +71,19 @@ class Tests(unittest.TestCase):
             result = main.dispatch(event(False))
             on.assert_not_called(); off.assert_called_once()
             self.assertEqual(result['payload']['devices'][0]['capabilities'][0]['state']['action_result']['status'], 'ERROR')
+
+    @patch('main.authorize')
+    def test_restart_and_sleep_are_separate_one_shot_devices(self, auth):
+        for device_id, command in ((main.RESTART_DEVICE_ID, 'RESTART'), (main.SLEEP_DEVICE_ID, 'SLEEP')):
+            request = event()
+            request['payload']['devices'][0]['id'] = device_id
+            with patch('main.agent_command') as run:
+                result = main.dispatch(request)
+                run.assert_called_once_with(main.settings(), command)
+            self.assertEqual(result['payload']['devices'][0]['capabilities'][0]['state']['action_result']['status'], 'DONE')
+            request['payload']['devices'][0]['capabilities'][0]['state']['value'] = False
+            result = main.dispatch(request)
+            self.assertEqual(result['payload']['devices'][0]['capabilities'][0]['state']['action_result']['error_code'], 'INVALID_ACTION')
 
     def test_auth_denied_before_network(self):
         with patch('main.authorize', side_effect=PermissionError), patch('main.power_on') as on:
@@ -101,8 +117,21 @@ class Tests(unittest.TestCase):
 
     @patch('main.authorize')
     def test_discovery_and_query_do_not_invent_power_state(self, auth):
-        self.assertEqual(main.dispatch(event(kind='discovery'))['payload']['devices'][0]['type'], 'devices.types.other')
-        self.assertFalse(main.dispatch(event(kind='discovery'))['payload']['devices'][0]['capabilities'][0]['retrievable'])
-        self.assertEqual(main.dispatch(event(kind='query'))['payload']['devices'][0]['capabilities'], [])
+        found = main.dispatch(event(kind='discovery'))['payload']['devices']
+        self.assertEqual([device['id'] for device in found], [main.DEVICE_ID, main.RESTART_DEVICE_ID, main.SLEEP_DEVICE_ID])
+        self.assertTrue(found[0]['capabilities'][0]['retrievable'])
+        self.assertFalse(found[1]['capabilities'][0]['retrievable'])
+        with patch('main.power_state', return_value=True):
+            status = main.dispatch(event(kind='query'))['payload']['devices'][0]
+        self.assertEqual(status['capabilities'][0]['state']['value'], True)
+        query = event(kind='query')
+        query['payload']['devices'].append({'id': main.RESTART_DEVICE_ID})
+        with patch('main.power_state', return_value=True):
+            results = main.dispatch(query)['payload']['devices']
+        self.assertEqual(len(results), 2)
+        self.assertEqual(results[1]['capabilities'], [])
+        with patch('main.power_state', side_effect=main.DeviceError('DEVICE_UNREACHABLE', 'offline')):
+            status = main.dispatch(event(kind='query'))['payload']['devices'][0]
+        self.assertEqual(status['error_code'], 'DEVICE_UNREACHABLE')
 
 if __name__ == '__main__': unittest.main()

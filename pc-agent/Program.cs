@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 
@@ -10,6 +11,10 @@ internal static class Program
     private const int Port = 3000;
     private sealed record Challenge(long ExpiresAt, IPEndPoint RemoteEndPoint);
     private static readonly ConcurrentDictionary<string, Challenge> Challenges = new();
+
+    [DllImport("PowrProf.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetSuspendState(bool hibernate, bool forceCritical, bool disableWakeEvent);
 
     private static async Task<int> Main(string[] args)
     {
@@ -81,19 +86,38 @@ internal static class Program
                 return;
             }
 
-            if (fields.Length != 4 || fields[0] != "WM1" || fields[1] != "SHUTDOWN" || !IsNonce(fields[2])) return;
+            if (fields.Length != 4 || fields[0] != "WM1" || !IsAllowedCommand(fields[1]) || !IsNonce(fields[2])) return;
             if (!Challenges.TryRemove(fields[2], out var challenge)
                 || DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() > challenge.ExpiresAt
                 || !challenge.RemoteEndPoint.Equals(datagram.RemoteEndPoint)) return;
-            if (!Verify(key, $"SHUTDOWN|{fields[2]}", fields[3])) return;
+            var command = fields[1];
+            if (!Verify(key, $"{command}|{fields[2]}", fields[3])) return;
 
-            var ack = $"WM1|SHUTDOWN_ACCEPTED|{fields[2]}|{Sign(key, $"SHUTDOWN_ACCEPTED|{fields[2]}")}";
+            var replyVerb = command == "STATUS" ? "STATUS_ONLINE" : command + "_ACCEPTED";
+            var ack = $"WM1|{replyVerb}|{fields[2]}|{Sign(key, $"{replyVerb}|{fields[2]}")}";
             await SendAsync(udp, ack, datagram.RemoteEndPoint);
-            Console.WriteLine($"{DateTime.Now:T}: принята команда выключения.");
+            if (command == "STATUS") return;
+
+            var description = command switch
+            {
+                "SHUTDOWN" => "выключения",
+                "RESTART" => "перезагрузки",
+                "SLEEP" => "спящего режима",
+                _ => "команды"
+            };
+            Console.WriteLine($"{DateTime.Now:T}: принята команда {description}.");
             _ = Task.Run(async () =>
             {
                 await Task.Delay(500);
-                Process.Start(new ProcessStartInfo("shutdown.exe", "/s /t 10")
+                if (command == "SLEEP")
+                {
+                    if (!SetSuspendState(false, false, false))
+                        Console.Error.WriteLine($"Не удалось включить спящий режим Windows: код {Marshal.GetLastWin32Error()}.");
+                    return;
+                }
+
+                var arguments = command == "RESTART" ? "/r /t 10" : "/s /t 10";
+                Process.Start(new ProcessStartInfo("shutdown.exe", arguments)
                 {
                     CreateNoWindow = true,
                     UseShellExecute = false
@@ -120,6 +144,9 @@ internal static class Program
     }
 
     private static bool IsNonce(string value) => value.Length == 32 && value.All(Uri.IsHexDigit);
+
+    private static bool IsAllowedCommand(string command) =>
+        command is "SHUTDOWN" or "RESTART" or "SLEEP" or "STATUS";
 
     private static string Sign(byte[] key, string message)
     {

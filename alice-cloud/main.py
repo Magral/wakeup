@@ -12,6 +12,12 @@ from urllib.request import Request, urlopen
 
 CAPABILITY = 'devices.capabilities.on_off'
 DEVICE_ID = 'wakemini-pc'
+RESTART_DEVICE_ID = 'wakemini-restart'
+SLEEP_DEVICE_ID = 'wakemini-sleep'
+COMMANDS = {
+    RESTART_DEVICE_ID: 'RESTART',
+    SLEEP_DEVICE_ID: 'SLEEP',
+}
 LOG = logging.getLogger(__name__)
 
 
@@ -74,7 +80,9 @@ def power_on(cfg):
             sock.sendto(packet, (ip, cfg['port']))
 
 
-def power_off(cfg):
+def agent_command(cfg, command):
+    if command not in ('SHUTDOWN', 'RESTART', 'SLEEP', 'STATUS'):
+        raise ValueError('Unsupported agent command')
     nonce = secrets.token_hex(16)
     ip = socket.gethostbyname(cfg['PC_HOST'])
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
@@ -86,14 +94,27 @@ def power_off(cfg):
             reply = sock.recv(256)
             if not validate_reply(reply, 'ONLINE', nonce, cfg['key']):
                 raise DeviceError('INTERNAL_ERROR', 'Ключ Windows-помощника не совпадает.')
-            command = 'WM1|SHUTDOWN|' + nonce + '|' + sign(cfg['key'], 'SHUTDOWN|' + nonce)
-            sock.send(command.encode('ascii'))
+            message = command + '|' + nonce
+            packet = 'WM1|' + message + '|' + sign(cfg['key'], message)
+            sock.send(packet.encode('ascii'))
             reply = sock.recv(256)
-            if not validate_reply(reply, 'SHUTDOWN_ACCEPTED', nonce, cfg['key']):
-                raise DeviceError('INTERNAL_ERROR', 'Подтверждение выключения не проверено.')
+            if command == 'STATUS':
+                if not validate_reply(reply, 'STATUS_ONLINE', nonce, cfg['key']):
+                    raise DeviceError('INTERNAL_ERROR', 'Ответ помощника не прошёл проверку.')
+                return True
+            if not validate_reply(reply, command + '_ACCEPTED', nonce, cfg['key']):
+                raise DeviceError('INTERNAL_ERROR', 'Подтверждение команды не прошло проверку.')
         except (socket.timeout, ConnectionRefusedError):
-            # Never wake a PC in response to an OFF command or retry shutdown.
-            raise DeviceError('DEVICE_UNREACHABLE', 'Нет подтверждения. ПК выключен, помощник недоступен или команда могла быть принята.') from None
+            # Never wake a PC in response to an agent command or retry it.
+            raise DeviceError('DEVICE_UNREACHABLE', 'Помощник не ответил. ПК может быть выключен или недоступен по сети.') from None
+
+
+def power_off(cfg):
+    agent_command(cfg, 'SHUTDOWN')
+
+
+def power_state(cfg):
+    return agent_command(cfg, 'STATUS')
 
 
 def dispatch(event):
@@ -107,30 +128,58 @@ def dispatch(event):
     LOG.info('smart_home type=%s request_id=%s', str(kind)[:20], json.dumps(request_id))
     answer = {'request_id': request_id}
     if kind == 'discovery':
-        answer['payload'] = {'user_id': user_id, 'devices': [{
-            'id': DEVICE_ID, 'name': 'Компьютер', 'type': 'devices.types.other',
-            'description': 'Включение по Wake-on-LAN и завершение работы Windows',
-            'capabilities': [{'type': CAPABILITY, 'retrievable': False, 'reportable': False}],
-            'device_info': {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.0.1'}
-        }]}
+        info = {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.1.0'}
+        answer['payload'] = {'user_id': user_id, 'devices': [
+            {'id': DEVICE_ID, 'name': 'Компьютер', 'type': 'devices.types.other',
+             'description': 'Включение, выключение и проверка связи с Windows',
+             'capabilities': [{'type': CAPABILITY, 'retrievable': True, 'reportable': False}],
+             'device_info': info},
+            {'id': RESTART_DEVICE_ID, 'name': 'Перезагрузка компьютера', 'type': 'devices.types.other',
+             'description': 'Однократная команда перезагрузки Windows',
+             'capabilities': [{'type': CAPABILITY, 'retrievable': False, 'reportable': False}],
+             'device_info': info},
+            {'id': SLEEP_DEVICE_ID, 'name': 'Спящий режим компьютера', 'type': 'devices.types.other',
+             'description': 'Однократная команда перевода Windows в спящий режим',
+             'capabilities': [{'type': CAPABILITY, 'retrievable': False, 'reportable': False}],
+             'device_info': info},
+        ]}
         return answer
     if kind == 'unlink':
         return answer
     if kind not in ('action', 'query'):
         raise ValueError('Unsupported request_type')
     devices = event.get('payload', {}).get('devices', [])
-    if not isinstance(devices, list) or len(devices) != 1:
-        raise ValueError('Exactly one device is supported')
+    if not isinstance(devices, list) or not devices or len(devices) > 20:
+        raise ValueError('Invalid device list')
+    if kind == 'query':
+        results = []
+        for device in devices:
+            device_id = device.get('id')
+            result = {'id': device_id}
+            if device_id not in (DEVICE_ID, *COMMANDS):
+                result.update(error_code='DEVICE_NOT_FOUND', error_message='Устройство не найдено.')
+            elif device_id != DEVICE_ID:
+                result['capabilities'] = []
+            else:
+                try:
+                    result['capabilities'] = [{'type': CAPABILITY, 'state': {'instance': 'on', 'value': power_state(cfg)}}]
+                except DeviceError as exc:
+                    result.update(error_code=exc.code, error_message=exc.message)
+                except OSError:
+                    result.update(error_code='DEVICE_UNREACHABLE')
+            results.append(result)
+        answer['payload'] = {'devices': results}
+        return answer
+    if len(devices) != 1:
+        raise ValueError('Actions must target exactly one device')
     device = devices[0]
     result = {'id': device.get('id')}
-    if device.get('id') != DEVICE_ID:
+    device_id = device.get('id')
+    if device_id not in (DEVICE_ID, *COMMANDS):
         result.update(error_code='DEVICE_NOT_FOUND', error_message='Устройство не найдено.')
-    elif kind == 'query':
-        # UDP silence cannot distinguish OFF from a broken connection. Do not invent state.
-        result['capabilities'] = []
     else:
         caps = device.get('capabilities', [])
-        valid = (len(caps) == 1 and caps[0].get('type') == CAPABILITY
+        valid = (isinstance(caps, list) and len(caps) == 1 and caps[0].get('type') == CAPABILITY
                  and caps[0].get('state', {}).get('instance') == 'on'
                  and type(caps[0].get('state', {}).get('value')) is bool)
         if not valid:
@@ -139,7 +188,12 @@ def dispatch(event):
             value = caps[0]['state']['value']
             action_result = {'status': 'DONE'}
             try:
-                (power_on if value else power_off)(cfg)
+                if device_id == DEVICE_ID:
+                    (power_on if value else power_off)(cfg)
+                elif value:
+                    agent_command(cfg, COMMANDS[device_id])
+                else:
+                    raise DeviceError('INVALID_ACTION', 'Для этой команды поддерживается только запуск.')
             except DeviceError as exc:
                 action_result = {'status': 'ERROR', 'error_code': exc.code, 'error_message': exc.message}
             except OSError:
