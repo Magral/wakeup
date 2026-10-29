@@ -45,6 +45,18 @@ jobs:
       - name: Build debug APK
         run: gradle assembleDebug
 
+      - name: Verify release signing with a disposable test key (not published)
+        env:
+          ANDROID_KEYSTORE_PATH: ${{ runner.temp }}/signing-test.jks
+          ANDROID_KEYSTORE_PASSWORD: signing-test-only
+          ANDROID_KEY_ALIAS: test
+          ANDROID_KEY_PASSWORD: signing-test-only
+        run: |
+          keytool -genkeypair -keystore "$ANDROID_KEYSTORE_PATH" -alias test -storepass "$ANDROID_KEYSTORE_PASSWORD" -keypass "$ANDROID_KEY_PASSWORD" -keyalg RSA -keysize 2048 -validity 2 -dname 'CN=CI test only'
+          gradle assembleRelease
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify app/build/outputs/apk/release/app-release.apk
+          rm -f "$ANDROID_KEYSTORE_PATH"
+
       - name: Build Windows helper
         run: dotnet build pc-agent/WakeMiniAgent.csproj --configuration Release
 

@@ -25,3 +25,10 @@ jobs:
           dotnet build tests/protocol/ProtocolTests.csproj -c Release -r win-x64 -o publish/test-counter
       - name: Verify duplicate UDP requests never launch twice
         run: python tests/integration_agent.py publish/test-agent/WakeMiniAgent.exe publish/test-counter/ProtocolTests.exe
+      - name: Parse Windows signing setup script
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'scripts/Setup-WakeMini-Signing.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count) { $errors | Format-List; exit 1 }
