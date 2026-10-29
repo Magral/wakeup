@@ -1,3 +1,8 @@
+if (args.Length == 2 && args[0] == "--launch-counter")
+{
+    File.AppendAllText(args[1], "launch\n");
+    return;
+}
 long now = 100;
 var ledger = new CommandLedger(() => now);
 ledger.Remember("nonce", "SHUTDOWN", "127.0.0.1:3000", "accepted");
