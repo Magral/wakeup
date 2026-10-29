@@ -1,6 +1,11 @@
 package ru.wakemini.app;
 
 import android.app.Activity;
+import android.app.AlertDialog;
+import android.content.Intent;
+import org.json.JSONObject;
+import com.google.zxing.integration.android.IntentIntegrator;
+import com.google.zxing.integration.android.IntentResult;
 import android.content.Context;
 import android.graphics.Color;
 import android.graphics.Typeface;
@@ -66,7 +71,7 @@ public class MainActivity extends Activity {
         page.setPadding(dp(22), dp(24), dp(22), dp(22));
         scroll.addView(page);
 
-        TextView eyebrow = text("WAKE MINI", 12, ACCENT, true);
+        TextView eyebrow = text("WAKE MINI 1.3.0", 12, ACCENT, true);
         eyebrow.setLetterSpacing(0.12f);
         page.addView(eyebrow);
         TextView title = text("Управление ПК", 30, TEXT, true);
@@ -155,6 +160,25 @@ public class MainActivity extends Activity {
         setup.setLineSpacing(dp(3), 1f);
         setup.setPadding(dp(2), dp(18), dp(2), dp(4));
         page.addView(setup);
+        Button scan = new Button(this);
+        scan.setText("Настроить по QR-коду с ПК");
+        scan.setOnClickListener(v -> new IntentIntegrator(this).setDesiredBarcodeFormats(IntentIntegrator.QR_CODE)
+                .setPrompt("Отсканируйте QR в помощнике Wake Mini на ПК").setBeepEnabled(false).initiateScan());
+        page.addView(scan, params(-1, -2));
+        LinearLayout actions = new LinearLayout(this);
+        actions.setOrientation(LinearLayout.VERTICAL);
+        page.addView(actions);
+        addAction(actions, "Включить ПК", "ON", false);
+        addAction(actions, "Выключить ПК", "SHUTDOWN", true);
+        addAction(actions, "Работа", "PROFILE_WORK", false);
+        addAction(actions, "Игры", "PROFILE_GAME", false);
+        addAction(actions, "Кино", "PROFILE_CINEMA", false);
+        Button diagnostic = new Button(this);
+        diagnostic.setText("Диагностика и история команд");
+        diagnostic.setOnClickListener(v -> new AlertDialog.Builder(this).setTitle("Диагностика")
+                .setMessage(connectionView.getText() + "\n\n" + getSharedPreferences(WakeController.PREFS, MODE_PRIVATE).getString("history", "Команд ещё нет."))
+                .setPositiveButton("Закрыть", null).show());
+        page.addView(diagnostic, params(-1, -2));
         setContentView(scroll);
     }
 
@@ -249,18 +273,11 @@ public class MainActivity extends Activity {
         statusCheckRunning = true;
         setPcStatus("Проверяю связь…", ACCENT);
         worker.execute(() -> {
-            boolean online = false;
-            try {
-                online = WakeController.isAgentOnline(this);
-            } catch (Exception ignored) {
-                // An unanswered or invalid response is shown as no connection.
-            }
-            final boolean isOnline = online;
+            WakeController.Status result = WakeController.diagnose(this);
             runOnUiThread(() -> {
                 statusCheckRunning = false;
-                if (isFinishing()) return;
-                setPcStatus(isOnline ? "ПК включён" : "ПК выключен или недоступен",
-                        isOnline ? Color.rgb(74, 214, 132) : Color.rgb(255, 105, 105));
+                if (isFinishing() || isDestroyed()) return;
+                setPcStatus(result.message, result.online ? Color.rgb(74, 214, 132) : Color.rgb(255, 105, 105));
             });
         });
     }
@@ -304,6 +321,7 @@ public class MainActivity extends Activity {
     }
 
     private void saveAndToggle() {
+        if (actionRunning) return;
         String mac = macInput.getText().toString().trim();
         String address = addressInput.getText().toString().trim();
         String port = portInput.getText().toString().trim();
@@ -316,11 +334,67 @@ public class MainActivity extends Activity {
         }
         saveSettings(mac, address, port, key);
         ((InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(toggleButton.getWindowToken(), 0);
+        actionRunning = true;
         setBusy(true, "Проверяю компьютер…");
         worker.execute(() -> {
             String result = WakeController.toggle(this);
-            runOnUiThread(() -> setBusy(false, result));
+            rememberResult("TOGGLE", result);
+            runOnUiThread(() -> { actionRunning = false; if (!isDestroyed()) { setBusy(false, result); refreshPcStatus(); } });
         });
+    }
+
+    private void addAction(LinearLayout parent, String title, String action, boolean confirm) {
+        Button button = new Button(this);
+        button.setText(title);
+        parent.addView(button, params(-1, -2));
+        button.setOnClickListener(v -> {
+            if (confirm) new AlertDialog.Builder(this).setTitle("Выключить компьютер?")
+                    .setMessage("Сохраните открытые документы. Windows выключится через 10 секунд.")
+                    .setNegativeButton("Отмена", null).setPositiveButton("Выключить", (d, which) -> executeAction(action)).show();
+            else executeAction(action);
+        });
+    }
+
+    private boolean actionRunning;
+    private void executeAction(String action) {
+        if (actionRunning) return;
+        actionRunning = true;
+        setBusy(true, "Отправляю команду…");
+        worker.execute(() -> {
+            String result = WakeController.execute(this, action);
+            rememberResult(action, result);
+            runOnUiThread(() -> {
+                actionRunning = false;
+                if (!isDestroyed()) { setBusy(false, result); refreshPcStatus(); }
+            });
+        });
+    }
+
+    private void rememberResult(String action, String result) {
+        android.content.SharedPreferences p = getSharedPreferences(WakeController.PREFS, MODE_PRIVATE);
+        String entry = new java.text.SimpleDateFormat("HH:mm:ss", java.util.Locale.getDefault()).format(new java.util.Date()) + " " + action + ": " + result;
+        String history = entry + "\n" + p.getString("history", "");
+        p.edit().putString("history", history.substring(0, Math.min(5000, history.length()))).apply();
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        IntentResult scan = IntentIntegrator.parseActivityResult(requestCode, resultCode, data);
+        if (scan == null) { super.onActivityResult(requestCode, resultCode, data); return; }
+        if (scan.getContents() == null) return;
+        try {
+            if (scan.getContents().length() > 4096) throw new IllegalArgumentException();
+            JSONObject cfg = new JSONObject(scan.getContents());
+            if (!cfg.getString("type").equals("wakemini") || cfg.getInt("version") != 1) throw new IllegalArgumentException();
+            String mac = cfg.getString("mac"), host = cfg.getString("host"), port = cfg.getString("port"), key = cfg.getString("key");
+            if (key.length() != 64 || WakeController.validate(mac, host, port, key) != null) throw new IllegalArgumentException();
+            new AlertDialog.Builder(this).setTitle("Подключить компьютер?")
+                    .setMessage("Адрес: " + host + "\nMAC: " + mac + "\nСуществующие настройки будут заменены.")
+                    .setNegativeButton("Отмена", null).setPositiveButton("Подключить", (d, which) -> {
+                        macInput.setText(mac); addressInput.setText(host); portInput.setText(port); keyInput.setText(key);
+                        saveSettings(); refreshPcStatus();
+                    }).show();
+        } catch (Exception ex) { new AlertDialog.Builder(this).setMessage("Это не корректный QR-код Wake Mini.").setPositiveButton("OK", null).show(); }
     }
 
     private void setBusy(boolean busy, String message) {

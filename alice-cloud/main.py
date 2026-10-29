@@ -20,6 +20,9 @@ COMMANDS = {
     RESTART_DEVICE_ID: 'RESTART',
     SLEEP_DEVICE_ID: 'SLEEP',
     APP_DEVICE_ID: 'LAUNCH',
+    'wakemini-profile-work': 'PROFILE_WORK',
+    'wakemini-profile-game': 'PROFILE_GAME',
+    'wakemini-profile-cinema': 'PROFILE_CINEMA',
 }
 LOG = logging.getLogger(__name__)
 _AUTH_CACHE = {}
@@ -127,25 +130,29 @@ def connect_agent(cfg, ip):
 
 
 def agent_command(cfg, command):
-    if command not in ('SHUTDOWN', 'RESTART', 'SLEEP', 'LAUNCH'):
+    if command not in ('SHUTDOWN', 'RESTART', 'SLEEP', 'LAUNCH', 'PROFILE_WORK', 'PROFILE_GAME', 'PROFILE_CINEMA'):
         raise ValueError('Unsupported agent command')
     ip = socket.gethostbyname(cfg['PC_HOST'])
     sock, nonce = connect_agent(cfg, ip)
     with sock:
-        sock.settimeout(0.75)
+        sock.settimeout(0.35)
         message = command + '|' + nonce
         packet = 'WM1|' + message + '|' + sign(cfg['key'], message)
-        sock.send(packet.encode('ascii'))
-        try:
-            reply = sock.recv(256)
-        except (socket.timeout, ConnectionRefusedError):
-            # Do not retry a command: Windows may have accepted it and only lost the acknowledgement.
-            raise DeviceError('DEVICE_UNREACHABLE', 'Windows-помощник не подтвердил команду.') from None
+        reply = None
+        for attempt in range(2):
+            sock.send(packet.encode('ascii'))
+            try:
+                reply = sock.recv(256)
+                break
+            except (socket.timeout, ConnectionRefusedError):
+                LOG.warning('agent_ack_timeout command=%s attempt=%s', command, attempt + 1)
+        if reply is None:
+            raise DeviceError('DEVICE_UNREACHABLE', 'Нет подтверждения. Команда могла выполниться; проверьте компьютер.')
         if validate_reply(reply, command + '_ACCEPTED', nonce, cfg['key']):
             return
-        if command == 'LAUNCH' and validate_reply(reply, 'LAUNCH_NOT_CONFIGURED', nonce, cfg['key']):
+        if (command == 'LAUNCH' or command.startswith('PROFILE_')) and validate_reply(reply, command + '_NOT_CONFIGURED', nonce, cfg['key']):
             raise DeviceError('INVALID_ACTION', 'Сначала выберите приложение в настройках Wake Mini на компьютере.')
-        if command == 'LAUNCH' and validate_reply(reply, 'LAUNCH_FAILED', nonce, cfg['key']):
+        if (command == 'LAUNCH' or command.startswith('PROFILE_')) and validate_reply(reply, command + '_FAILED', nonce, cfg['key']):
             raise DeviceError('INTERNAL_ERROR', 'Windows не удалось запустить выбранное приложение.')
         raise DeviceError('INTERNAL_ERROR', 'Подтверждение команды не прошло проверку.')
 
@@ -173,7 +180,7 @@ def dispatch(event):
     LOG.info('smart_home type=%s request_id=%s', str(kind)[:20], json.dumps(request_id))
     answer = {'request_id': request_id}
     if kind == 'discovery':
-        info = {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.2.4'}
+        info = {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.3.0'}
         answer['payload'] = {'user_id': user_id, 'devices': [
             {'id': DEVICE_ID, 'name': 'Компьютер', 'type': 'devices.types.other',
              'description': 'Включение, выключение и проверка связи с Windows',
@@ -192,6 +199,12 @@ def dispatch(event):
              'capabilities': [{'type': CAPABILITY, 'retrievable': False, 'reportable': False}],
              'device_info': info},
         ]}
+        for profile, title in [('work', 'Рабочий режим компьютера'), ('game', 'Игровой режим компьютера'), ('cinema', 'Кино на компьютере')]:
+            answer['payload']['devices'].append({
+                'id': 'wakemini-profile-' + profile, 'name': title, 'type': 'devices.types.other',
+                'description': 'Запуск локального профиля Windows',
+                'capabilities': [{'type': CAPABILITY, 'retrievable': False, 'reportable': False}],
+                'device_info': info})
         return answer
     if kind == 'unlink':
         return answer
@@ -247,6 +260,7 @@ def dispatch(event):
                 else:
                     raise DeviceError('INVALID_ACTION', 'Для этой команды поддерживается только запуск.')
             except DeviceError as exc:
+                LOG.warning('agent_action_error command_device=%s code=%s', device_id, exc.code)
                 action_result = {'status': 'ERROR', 'error_code': exc.code, 'error_message': exc.message}
             except OSError:
                 action_result = {'status': 'ERROR', 'error_code': 'DEVICE_UNREACHABLE'}

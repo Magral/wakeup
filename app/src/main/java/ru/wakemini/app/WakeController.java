@@ -33,103 +33,120 @@ final class WakeController {
         } catch (Exception ex) {
             return "Ошибка: UDP-порт должен быть от 1 до 65535.";
         }
-        if (!keyText.isEmpty() && hexToBytes(keyText) == null) return "Ошибка: ключ должен состоять из 64 hex-символов.";
+        if (!keyText.isEmpty() && (keyText.length() != 64 || hexToBytes(keyText) == null)) return "Ошибка: ключ должен состоять из 64 hex-символов.";
         return null;
     }
 
-    static boolean isAgentOnline(Context context) throws Exception {
-        SharedPreferences p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        String macText = p.getString("mac", "").trim();
-        String host = p.getString("address", p.getString("broadcast", "")).trim();
-        String portText = p.getString("port", "3000").trim();
-        String keyText = p.getString("key", "").trim();
-        String issue = validate(macText, host, portText, keyText);
-        if (issue != null) throw new IllegalArgumentException(issue);
-        byte[] key = hexToBytes(keyText);
-        if (key == null) throw new IllegalArgumentException("Для проверки статуса нужен ключ Windows-помощника.");
+    static final class Status {
+        final boolean online;
+        final String message;
+        Status(boolean online, String message) { this.online = online; this.message = message; }
+    }
 
-        int port = Integer.parseInt(portText);
-        InetAddress target = resolveIpv4(host);
-        String nonce = toHex(randomBytes(16));
-        try (DatagramSocket socket = new DatagramSocket()) {
-            socket.setSoTimeout(TIMEOUT_MS);
-            socket.connect(target, port);
-            sendText(socket, target, port, "WM1|PING|" + nonce);
-            try {
-                String response = receiveText(socket, target);
-                String[] fields = response.split("\\|", -1);
-                return fields.length == 4 && fields[0].equals("WM1") && fields[1].equals("ONLINE")
-                        && fields[2].equals(nonce) && verify(key, "ONLINE|" + nonce, fields[3]);
-            } catch (SocketTimeoutException ex) {
-                return false;
-            }
+    private static final class Session implements AutoCloseable {
+        final DatagramSocket socket;
+        final InetAddress address;
+        final String nonce;
+        final int port;
+        Session(InetAddress address, int port) throws Exception {
+            this.address = address; this.port = port;
+            nonce = toHex(randomBytes(16));
+            socket = new DatagramSocket();
+            socket.connect(address, port);
         }
+        public void close() { socket.close(); }
     }
 
     private static byte[] randomBytes(int count) {
-        byte[] value = new byte[count];
-        RANDOM.nextBytes(value);
-        return value;
+        byte[] bytes = new byte[count]; RANDOM.nextBytes(bytes); return bytes;
     }
 
-    static String toggle(Context context) {
+    private static Session connect(InetAddress address, int port, byte[] key) throws Exception {
+        for (int attempt = 0; attempt < 2; attempt++) {
+            Session session = new Session(address, port);
+            try {
+                sendText(session.socket, address, port, "WM1|PING|" + session.nonce);
+                String reply = receiveText(session.socket, address);
+                if (!validReply(reply, "ONLINE", session.nonce, key))
+                    throw new SecurityException("Помощник ответил, но ключ не совпадает.");
+                return session;
+            } catch (SocketTimeoutException ex) {
+                session.close();
+            } catch (Exception ex) { session.close(); throw ex; }
+        }
+        throw new SocketTimeoutException();
+    }
+
+    static Status diagnose(Context context) {
         SharedPreferences p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
-        String macText = p.getString("mac", "").trim();
+        try {
+            String issue = validate(p.getString("mac", ""), p.getString("address", ""), p.getString("port", "3000"), p.getString("key", ""));
+            if (issue != null) return new Status(false, issue);
+            byte[] key = hexToBytes(p.getString("key", ""));
+            if (key == null) return new Status(false, "Добавьте ключ Windows-помощника.");
+            long start = android.os.SystemClock.elapsedRealtime();
+            try (Session session = connect(resolveIpv4(p.getString("address", "")), Integer.parseInt(p.getString("port", "3000")), key)) {
+                return new Status(true, "ПК включён · " + (android.os.SystemClock.elapsedRealtime() - start) + " мс");
+            }
+        } catch (java.net.UnknownHostException ex) { return new Status(false, "Ошибка: DDNS/IP не найден. Проверьте адрес и интернет."); }
+        catch (SecurityException ex) { return new Status(false, "Ошибка: ключ помощника не совпадает."); }
+        catch (SocketTimeoutException ex) { return new Status(false, "ПК выключен или помощник не отвечает. Проверьте UDP 3000 и Брандмауэр."); }
+        catch (Exception ex) { return new Status(false, "Ошибка: сеть или UDP-порт недоступны."); }
+    }
+
+    static boolean isAgentOnline(Context context) { return diagnose(context).online; }
+    static String toggle(Context context) { return execute(context, "TOGGLE"); }
+
+    static String execute(Context context, String action) {
+        if (!java.util.Arrays.asList("ON", "TOGGLE", "SHUTDOWN", "RESTART", "SLEEP", "PROFILE_WORK", "PROFILE_GAME", "PROFILE_CINEMA").contains(action))
+            return "Ошибка: неизвестная команда.";
+        SharedPreferences p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        String mac = p.getString("mac", "").trim();
         String host = p.getString("address", p.getString("broadcast", "")).trim();
         String portText = p.getString("port", "3000").trim();
         String keyText = p.getString("key", "").trim();
-        String issue = validate(macText, host, portText, keyText);
+        String issue = validate(mac, host, portText, keyText);
         if (issue != null) return issue;
-        int port = Integer.parseInt(portText);
         try {
             InetAddress target = resolveIpv4(host);
-            byte[] key = keyText.isEmpty() ? null : hexToBytes(keyText);
-            if (key == null) {
-                sendMagicPacket(target, port, macText);
-                return "Пакет пробуждения отправлен.";
+            int port = Integer.parseInt(portText);
+            byte[] key = hexToBytes(keyText);
+            if (action.equals("ON") || (action.equals("TOGGLE") && key == null)) {
+                sendMagicPacket(target, port, mac); return "Пакет пробуждения отправлен.";
             }
-            return toggleWithAgent(target, port, macText, key);
-        } catch (SocketTimeoutException ex) {
-            return "ПК не ответил. Отправлен пакет включения.";
-        } catch (Exception ex) {
-            return "Ошибка отправки: " + (ex.getMessage() == null ? "проверьте адрес и сеть." : ex.getMessage());
-        }
+            if (key == null) return "Ошибка: добавьте ключ Windows-помощника.";
+            Session session;
+            try { session = connect(target, port, key); }
+            catch (SocketTimeoutException ex) {
+                if (!action.equals("TOGGLE")) return "Ошибка: помощник не ответил. Команда не отправлена.";
+                sendMagicPacket(target, port, mac); return "ПК не ответил. Отправлен пакет включения.";
+            }
+            try (Session active = session) {
+                String command = action.equals("TOGGLE") ? "SHUTDOWN" : action;
+                String packet = "WM1|" + command + "|" + active.nonce + "|" + sign(key, command + "|" + active.nonce);
+                // Retry the exact signed packet from the same socket. The helper executes it at most once.
+                for (int attempt = 0; attempt < 2; attempt++) {
+                    sendText(active.socket, target, port, packet);
+                    try {
+                        String reply = receiveText(active.socket, target);
+                        if (validReply(reply, command + "_ACCEPTED", active.nonce, key))
+                            return command.equals("SHUTDOWN") ? "Команда выключения принята. ПК выключится через 10 секунд." : "Команда принята: " + command;
+                        if (validReply(reply, command + "_NOT_CONFIGURED", active.nonce, key)) return "Ошибка: настройте профиль в помощнике на ПК.";
+                        if (validReply(reply, command + "_FAILED", active.nonce, key)) return "Ошибка: Windows не удалось запустить программу.";
+                        return "Ошибка: подпись подтверждения не совпадает.";
+                    } catch (SocketTimeoutException ignored) { }
+                }
+                return "Ошибка: нет подтверждения. Команда могла выполниться; проверьте ПК.";
+            }
+        } catch (SecurityException ex) { return "Ошибка: помощник ответил, но ключ не совпадает."; }
+        catch (java.net.UnknownHostException ex) { return "Ошибка: DDNS/IP не найден."; }
+        catch (Exception ex) { return "Ошибка: сеть или порт недоступны."; }
     }
 
-    private static String toggleWithAgent(InetAddress target, int port, String macText, byte[] key) throws Exception {
-        byte[] random = new byte[16];
-        RANDOM.nextBytes(random);
-        String nonce = toHex(random);
-        try (DatagramSocket socket = new DatagramSocket()) {
-            socket.setBroadcast(true);
-            socket.setSoTimeout(TIMEOUT_MS);
-            sendText(socket, target, port, "WM1|PING|" + nonce);
-            String response;
-            try {
-                response = receiveText(socket, target);
-            } catch (SocketTimeoutException ex) {
-                sendMagicPacket(target, port, macText);
-                return "ПК не ответил. Отправлен пакет включения.";
-            }
-            String[] fields = response.split("\\|", -1);
-            if (fields.length != 4 || !fields[0].equals("WM1") || !fields[1].equals("ONLINE") || !fields[2].equals(nonce)
-                    || !verify(key, "ONLINE|" + nonce, fields[3])) {
-                return "Ошибка: помощник ответил, но ключ не совпадает.";
-            }
-            sendText(socket, target, port, "WM1|SHUTDOWN|" + nonce + "|" + sign(key, "SHUTDOWN|" + nonce));
-            String acknowledgement;
-            try {
-                acknowledgement = receiveText(socket, target);
-            } catch (SocketTimeoutException ex) {
-                return "Ошибка: помощник не подтвердил выключение. ПК мог принять команду.";
-            }
-            String[] ack = acknowledgement.split("\\|", -1);
-            if (ack.length == 4 && ack[0].equals("WM1") && ack[1].equals("SHUTDOWN_ACCEPTED") && ack[2].equals(nonce)
-                    && verify(key, "SHUTDOWN_ACCEPTED|" + nonce, ack[3])) {
-                return "Команда выключения принята. ПК выключится через 10 секунд.";
-            }
-            return "Ошибка: не получено подтверждение выключения.";
-        }
+    private static boolean validReply(String reply, String verb, String nonce, byte[] key) {
+        String[] parts = reply.split("\\|", -1);
+        return parts.length == 4 && parts[0].equals("WM1") && parts[1].equals(verb)
+                && parts[2].equals(nonce) && verify(key, verb + "|" + nonce, parts[3]);
     }
 
     private static void sendMagicPacket(InetAddress target, int port, String macText) throws Exception {

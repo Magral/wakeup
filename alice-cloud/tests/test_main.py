@@ -109,6 +109,29 @@ class Tests(unittest.TestCase):
             thread.join()
             self.assertEqual(failures, [])
 
+    def test_lost_ack_retries_same_packet_and_endpoint(self):
+        failures = []
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server:
+            server.bind(('127.0.0.1', 0)); server.settimeout(2)
+            cfg = main.settings() | {'port': server.getsockname()[1]}
+            def agent():
+                try:
+                    ping, remote = server.recvfrom(256)
+                    nonce = ping.decode().split('|')[2]
+                    message = 'ONLINE|' + nonce
+                    server.sendto(('WM1|' + message + '|' + main.sign(cfg['key'], message)).encode(), remote)
+                    first, endpoint = server.recvfrom(256)
+                    second, repeated_endpoint = server.recvfrom(256)
+                    self.assertEqual(first, second)
+                    self.assertEqual(endpoint, repeated_endpoint)
+                    self.assertEqual(endpoint, remote)
+                    message = 'SHUTDOWN_ACCEPTED|' + nonce
+                    server.sendto(('WM1|' + message + '|' + main.sign(cfg['key'], message)).encode(), remote)
+                except Exception as exc: failures.append(exc)
+            thread = threading.Thread(target=agent); thread.start()
+            main.agent_command(cfg, 'SHUTDOWN')
+            thread.join(); self.assertEqual(failures, [])
+
     @patch('main.authorize')
     def test_on_and_off_are_separate(self, auth):
         with patch('main.power_on') as on, patch('main.power_off') as off:
@@ -174,7 +197,7 @@ class Tests(unittest.TestCase):
     @patch('main.authorize')
     def test_discovery_and_query_do_not_invent_power_state(self, auth):
         found = main.dispatch(event(kind='discovery'))['payload']['devices']
-        self.assertEqual([device['id'] for device in found], [main.DEVICE_ID, main.RESTART_DEVICE_ID, main.SLEEP_DEVICE_ID, main.APP_DEVICE_ID])
+        self.assertEqual([device['id'] for device in found], [main.DEVICE_ID, main.RESTART_DEVICE_ID, main.SLEEP_DEVICE_ID, main.APP_DEVICE_ID, 'wakemini-profile-work', 'wakemini-profile-game', 'wakemini-profile-cinema'])
         self.assertTrue(found[0]['capabilities'][0]['retrievable'])
         self.assertFalse(found[1]['capabilities'][0]['retrievable'])
         with patch('main.power_state', return_value=True):

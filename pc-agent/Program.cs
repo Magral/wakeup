@@ -8,11 +8,14 @@ using System.Text;
 using System.Text.Json;
 using System.Windows.Forms;
 
-internal static class Program
+internal static partial class Program
 {
     private const int Port = 3000;
     private static readonly ConcurrentDictionary<string, Challenge> Challenges = new();
     private static readonly object LogLock = new();
+    private static readonly CommandLedger Ledger = new();
+    private static readonly SemaphoreSlim CommandGate = new(1, 1);
+    private static DateTime? LastRequest;
 
     [DllImport("PowrProf.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
@@ -104,50 +107,56 @@ internal static class Program
             }
 
             if (fields.Length != 4 || fields[0] != "WM1" || !IsAllowedCommand(fields[1]) || !IsNonce(fields[2])) return;
-            if (!Challenges.TryRemove(fields[2], out var challenge)
-                || DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() > challenge.ExpiresAt
-                || !challenge.RemoteEndPoint.Equals(datagram.RemoteEndPoint)) return;
-
             var command = fields[1];
-            if (!Verify(key, $"{command}|{fields[2]}", fields[3])) return;
-
-            if (command == "LAUNCH")
+            var nonce = fields[2];
+            if (!Verify(key, $"{command}|{nonce}", fields[3])) return;
+            await CommandGate.WaitAsync();
+            try
             {
-                var replyVerb = LaunchApplication(baseDirectory, out var error)
-                    ? "LAUNCH_ACCEPTED"
-                    : error == "not_configured" ? "LAUNCH_NOT_CONFIGURED" : "LAUNCH_FAILED";
-                if (error is not null && error != "not_configured") Log(baseDirectory, $"Не удалось запустить приложение: {error}");
-                await SendAsync(udp, SignedReply(key, replyVerb, fields[2]), datagram.RemoteEndPoint);
-                if (replyVerb == "LAUNCH_ACCEPTED") Log(baseDirectory, "Запущено приложение из локальных настроек.");
-                return;
-            }
-
-            await SendAsync(udp, SignedReply(key, command + "_ACCEPTED", fields[2]), datagram.RemoteEndPoint);
-            var description = command switch
-            {
-                "SHUTDOWN" => "выключения",
-                "RESTART" => "перезагрузки",
-                "SLEEP" => "спящего режима",
-                _ => "команды"
-            };
-            Log(baseDirectory, $"Принята команда {description}.");
-            _ = Task.Run(async () =>
-            {
-                await Task.Delay(500);
-                if (command == "SLEEP")
+                var endpoint = datagram.RemoteEndPoint.ToString();
+                if (Ledger.Find(nonce, command, endpoint) is string previous)
                 {
-                    if (!SetSuspendState(false, false, false))
-                        Log(baseDirectory, $"Не удалось включить спящий режим Windows: код {Marshal.GetLastWin32Error()}.");
+                    await SendAsync(udp, previous, datagram.RemoteEndPoint);
                     return;
                 }
-
-                var arguments = command == "RESTART" ? "/r /t 10" : "/s /t 10";
-                Process.Start(new ProcessStartInfo("shutdown.exe", arguments)
+                if (!Challenges.TryRemove(nonce, out var challenge)
+                    || DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() > challenge.ExpiresAt
+                    || !challenge.RemoteEndPoint.Equals(datagram.RemoteEndPoint)) return;
+                LastRequest = DateTime.Now;
+                string verb;
+                if (command == "LAUNCH" || command.StartsWith("PROFILE_"))
                 {
-                    CreateNoWindow = true,
-                    UseShellExecute = false
-                });
-            });
+                    var profile = command == "LAUNCH" ? null : command[8..].ToLowerInvariant();
+                    verb = LaunchApplication(baseDirectory, out var error, profile)
+                        ? command + "_ACCEPTED"
+                        : error == "not_configured" ? command + "_NOT_CONFIGURED" : command + "_FAILED";
+                    Log(baseDirectory, $"Команда {command}: {verb}.");
+                }
+                else
+                {
+                    verb = command + "_ACCEPTED";
+                    Log(baseDirectory, $"Принята команда {command}.");
+                    _ = Task.Run(async () =>
+                    {
+                        try
+                        {
+                            await Task.Delay(500);
+                            if (command == "SLEEP")
+                            {
+                                if (!SetSuspendState(false, false, false)) Log(baseDirectory, "Windows не перешла в сон.");
+                                return;
+                            }
+                            Process.Start(new ProcessStartInfo("shutdown.exe", command == "RESTART" ? "/r /t 10" : "/s /t 10")
+                            { CreateNoWindow = true, UseShellExecute = false });
+                        }
+                        catch (Exception ex) { Log(baseDirectory, "Ошибка выполнения команды: " + ex.Message); }
+                    });
+                }
+                var reply = SignedReply(key, verb, nonce);
+                Ledger.Remember(nonce, command, endpoint, reply);
+                await SendAsync(udp, reply, datagram.RemoteEndPoint);
+            }
+            finally { CommandGate.Release(); }
         }
         catch (Exception ex)
         {
@@ -155,11 +164,12 @@ internal static class Program
         }
     }
 
-    private static bool LaunchApplication(string baseDirectory, out string? error)
+    private static bool LaunchApplication(string baseDirectory, out string? error, string? profile = null)
     {
         error = null;
         var settings = ReadSettings(baseDirectory);
-        var path = settings.LaunchPath?.Trim();
+        var selected = profile is null ? null : settings.Profiles.GetValueOrDefault(profile);
+        var path = (profile is null ? settings.LaunchPath : selected?.Path)?.Trim();
         if (string.IsNullOrEmpty(path) || !Path.IsPathFullyQualified(path) || !File.Exists(path)
             || !string.Equals(Path.GetExtension(path), ".exe", StringComparison.OrdinalIgnoreCase))
         {
@@ -172,7 +182,7 @@ internal static class Program
             Process.Start(new ProcessStartInfo
             {
                 FileName = path,
-                Arguments = settings.LaunchArguments ?? "",
+                Arguments = (profile is null ? settings.LaunchArguments : selected?.Arguments) ?? "",
                 WorkingDirectory = Path.GetDirectoryName(path) ?? baseDirectory,
                 UseShellExecute = true
             });
@@ -201,7 +211,7 @@ internal static class Program
     private static bool IsNonce(string value) => value.Length == 32 && value.All(Uri.IsHexDigit);
 
     private static bool IsAllowedCommand(string command) =>
-        command is "SHUTDOWN" or "RESTART" or "SLEEP" or "LAUNCH";
+        command is "SHUTDOWN" or "RESTART" or "SLEEP" or "LAUNCH" or "PROFILE_WORK" or "PROFILE_GAME" or "PROFILE_CINEMA";
 
     private static string SignedReply(byte[] key, string verb, string nonce) =>
         $"WM1|{verb}|{nonce}|{Sign(key, $"{verb}|{nonce}")}";
@@ -278,11 +288,20 @@ internal static class Program
 
     private sealed record Challenge(long ExpiresAt, IPEndPoint RemoteEndPoint);
 
+    private sealed class LaunchProfile
+    {
+        public string? Path { get; set; }
+        public string? Arguments { get; set; }
+    }
+
     private sealed class AgentSettings
     {
         public string? LaunchPath { get; set; }
         public string? LaunchArguments { get; set; }
         public bool LaunchOnStartup { get; set; }
+        public string? Host { get; set; }
+        public string? Mac { get; set; }
+        public Dictionary<string, LaunchProfile> Profiles { get; set; } = new();
     }
 
     private sealed class AgentTrayContext : ApplicationContext
@@ -299,6 +318,13 @@ internal static class Program
             var menu = new ContextMenuStrip();
             menu.Items.Add(new ToolStripMenuItem("Wake Mini работает") { Enabled = false });
             menu.Items.Add(new ToolStripSeparator());
+            var startup = new ToolStripMenuItem("Запускать помощник вместе с Windows") { CheckOnClick = true, Checked = StartupEnabled() };
+            startup.CheckedChanged += (_, _) => { try { SetStartup(startup.Checked); } catch (Exception ex) { MessageBox.Show(ex.Message, "Wake Mini"); } };
+            menu.Items.Add(startup);
+            menu.Items.Add(new ToolStripMenuItem("Подключить телефон / QR…", null, (_, _) => ConfigurePhone(_baseDirectory)));
+            menu.Items.Add(new ToolStripMenuItem("Состояние и диагностика…", null, (_, _) => ShowDiagnostics(_baseDirectory)));
+            menu.Items.Add(new ToolStripMenuItem("Профили: Работа / Игры / Кино…", null, (_, _) => ConfigureProfiles(_baseDirectory)));
+            menu.Items.Add(new ToolStripMenuItem("Отменить выключение / перезагрузку", null, (_, _) => CancelShutdown()));
             menu.Items.Add(new ToolStripMenuItem("Настроить приложение…", null, (_, _) => ConfigureApplication()));
             _launchNow = new ToolStripMenuItem("Запустить приложение сейчас", null, (_, _) => LaunchFromTray());
             menu.Items.Add(_launchNow);
@@ -314,7 +340,7 @@ internal static class Program
 
             _tray = new NotifyIcon
             {
-                Icon = SystemIcons.Application,
+                Icon = Icon.ExtractAssociatedIcon(Environment.ProcessPath!) ?? SystemIcons.Application,
                 Text = "Wake Mini — помощник работает",
                 ContextMenuStrip = menu,
                 Visible = true
