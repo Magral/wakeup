@@ -9,3 +9,8 @@ __pycache__/
 alice-cloud/.env*
 alice-cloud/environment.json
 *.zip
+
+*.jks
+*.keystore
+keystore.properties
+*.dpapi

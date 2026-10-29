@@ -6,6 +6,21 @@ android {
     namespace 'ru.wakemini.app'
     compileSdk 35
 
+    signingConfigs {
+        stable {
+            if (System.getenv('ANDROID_KEYSTORE_PATH')) {
+                storeFile file(System.getenv('ANDROID_KEYSTORE_PATH'))
+                storePassword System.getenv('ANDROID_KEYSTORE_PASSWORD')
+                keyAlias System.getenv('ANDROID_KEY_ALIAS')
+                keyPassword System.getenv('ANDROID_KEY_PASSWORD')
+            }
+        }
+    }
+    buildTypes {
+        release {
+            if (System.getenv('ANDROID_KEYSTORE_PATH')) signingConfig signingConfigs.stable
+        }
+    }
     defaultConfig {
         applicationId 'ru.wakemini.app'
         minSdk 23
@@ -17,7 +32,7 @@ android {
 
 // Fixed QR decoder version supports Android 6 without raising the minimum SDK.
 dependencies {
-    implementation('com.journeyapps:zxing-android-embedded:4.3.0') { transitive = false }
+    implementation('com.journeyapps:zxing-android-embedded:4.3.0') { exclude group: 'com.google.zxing', module: 'core' }
     implementation 'com.google.zxing:core:3.3.0'
     implementation 'androidx.core:core:1.9.0'
 }

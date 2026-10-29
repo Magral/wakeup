@@ -35,6 +35,7 @@ public class MainActivity extends Activity {
     private static final int MUTED = Color.rgb(157, 173, 184);
     private static final int ACCENT = Color.rgb(39, 198, 183);
     private final ExecutorService worker = Executors.newSingleThreadExecutor();
+    private final ExecutorService statusWorker = Executors.newSingleThreadExecutor();
     private EditText macInput;
     private EditText addressInput;
     private EditText portInput;
@@ -272,7 +273,7 @@ public class MainActivity extends Activity {
 
         statusCheckRunning = true;
         setPcStatus("Проверяю связь…", ACCENT);
-        worker.execute(() -> {
+        statusWorker.execute(() -> {
             WakeController.Status result = WakeController.diagnose(this);
             runOnUiThread(() -> {
                 statusCheckRunning = false;
@@ -406,6 +407,8 @@ public class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        statusHandler.removeCallbacks(statusPoll);
+        statusWorker.shutdownNow();
         worker.shutdownNow();
         super.onDestroy();
     }

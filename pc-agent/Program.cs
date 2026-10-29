@@ -27,6 +27,8 @@ internal static partial class Program
         ApplicationConfiguration.Initialize();
         if (args.Length > 0 && args[0] == "--install-firewall") return InstallFirewallRule();
 
+        using var instance = new Mutex(true, @"Local\WakeMiniAgent", out var firstInstance);
+        if (!firstInstance) return 0;
         var baseDirectory = AppContext.BaseDirectory;
         byte[] key;
         try { key = LoadOrCreateKey(baseDirectory); }
