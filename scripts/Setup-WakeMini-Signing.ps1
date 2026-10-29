@@ -18,7 +18,7 @@ $store = Join-Path $signingDir 'wakemini.jks'
 $protectedPassword = Join-Path $signingDir 'password.dpapi'
 if (Test-Path $store) {
     if (-not (Test-Path $protectedPassword)) { throw 'Existing keystore found without its password file. It was not overwritten.' }
-    $secure = Get-Content $protectedPassword -Raw | ConvertTo-SecureString
+    $secure = (Get-Content $protectedPassword -Raw).Trim() | ConvertTo-SecureString
     $password = [System.Net.NetworkCredential]::new('', $secure).Password
 } else {
     $bytes = New-Object byte[] 32
