@@ -14,3 +14,10 @@ alice-cloud/environment.json
 *.keystore
 keystore.properties
 *.dpapi
+
+**/bin/
+**/obj/
+
+wake.key
+wake-tv.json
+wake-tv.json.tmp

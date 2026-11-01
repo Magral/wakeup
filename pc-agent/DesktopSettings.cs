@@ -86,7 +86,10 @@ internal static partial class Program
             .SelectMany(n => n.GetIPProperties().UnicastAddresses).Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork)
             .Select(a => a.Address.ToString());
         var log = Path.Combine(directory, "WakeMiniAgent.log");
+        string tv;
+        lock (TvLock) tv = TvMessage;
         var text = "Wake Mini " + typeof(Program).Assembly.GetName().Version + "\r\nUDP-порт: 3000\r\nIP: " + string.Join(", ", addresses)
+            + "\r\nLG TV: " + tv
             + "\r\nПоследняя принятая команда: " + (LastRequest?.ToString() ?? "ещё нет")
             + "\r\n\r\n" + (File.Exists(log) ? string.Join("\r\n", File.ReadLines(log).TakeLast(40)) : "Журнал пока пуст.");
         var pair = SettingsWindow("диагностика"); using var form = pair.Form;

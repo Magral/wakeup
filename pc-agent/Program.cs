@@ -126,7 +126,10 @@ internal static partial class Program
                     || !challenge.RemoteEndPoint.Equals(datagram.RemoteEndPoint)) return;
                 LastRequest = DateTime.Now;
                 string verb;
-                if (command == "LAUNCH" || command.StartsWith("PROFILE_"))
+                if (command == "TV_PC") verb = StartTv(baseDirectory);
+                else if (command == "TV_STATUS") verb = TvStatus();
+                else if (command == "TV_CANCEL") { CancelTv(); verb = "TV_CANCEL_ACCEPTED"; }
+                else if (command == "LAUNCH" || command.StartsWith("PROFILE_"))
                 {
                     var profile = command == "LAUNCH" ? null : command[8..].ToLowerInvariant();
                     verb = LaunchApplication(baseDirectory, out var error, profile)
@@ -213,7 +216,7 @@ internal static partial class Program
     private static bool IsNonce(string value) => value.Length == 32 && value.All(Uri.IsHexDigit);
 
     private static bool IsAllowedCommand(string command) =>
-        command is "SHUTDOWN" or "RESTART" or "SLEEP" or "LAUNCH" or "PROFILE_WORK" or "PROFILE_GAME" or "PROFILE_CINEMA";
+        command is "TV_PC" or "TV_STATUS" or "TV_CANCEL" or "SHUTDOWN" or "RESTART" or "SLEEP" or "LAUNCH" or "PROFILE_WORK" or "PROFILE_GAME" or "PROFILE_CINEMA";
 
     private static string SignedReply(byte[] key, string verb, string nonce) =>
         $"WM1|{verb}|{nonce}|{Sign(key, $"{verb}|{nonce}")}";
@@ -324,6 +327,7 @@ internal static partial class Program
             startup.CheckedChanged += (_, _) => { try { SetStartup(startup.Checked); } catch (Exception ex) { MessageBox.Show(ex.Message, "Wake Mini"); } };
             menu.Items.Add(startup);
             menu.Items.Add(new ToolStripMenuItem("Подключить телефон / QR…", null, (_, _) => ConfigurePhone(_baseDirectory)));
+            menu.Items.Add(new ToolStripMenuItem("Телевизор LG OLED…", null, (_, _) => ConfigureTv(_baseDirectory)));
             menu.Items.Add(new ToolStripMenuItem("Состояние и диагностика…", null, (_, _) => ShowDiagnostics(_baseDirectory)));
             menu.Items.Add(new ToolStripMenuItem("Профили: Работа / Игры / Кино…", null, (_, _) => ConfigureProfiles(_baseDirectory)));
             menu.Items.Add(new ToolStripMenuItem("Отменить выключение / перезагрузку", null, (_, _) => CancelShutdown()));
@@ -350,6 +354,7 @@ internal static partial class Program
             _tray.DoubleClick += (_, _) => ConfigureApplication();
             RefreshMenu();
             StartConfiguredAppIfNeeded();
+            StartTvOnLogin(_baseDirectory);
         }
 
         private void RefreshMenu()
@@ -572,6 +577,7 @@ internal static partial class Program
 
         protected override void ExitThreadCore()
         {
+            CancelTv();
             _tray.Visible = false;
             _tray.Dispose();
             base.ExitThreadCore();

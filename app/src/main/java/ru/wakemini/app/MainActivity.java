@@ -72,7 +72,7 @@ public class MainActivity extends Activity {
         page.setPadding(dp(22), dp(24), dp(22), dp(22));
         scroll.addView(page);
 
-        TextView eyebrow = text("WAKE MINI 1.3.0", 12, ACCENT, true);
+        TextView eyebrow = text("WAKE MINI 1.4.0", 12, ACCENT, true);
         eyebrow.setLetterSpacing(0.12f);
         page.addView(eyebrow);
         TextView title = text("Управление ПК", 30, TEXT, true);
@@ -170,6 +170,12 @@ public class MainActivity extends Activity {
         actions.setOrientation(LinearLayout.VERTICAL);
         page.addView(actions);
         addAction(actions, "Включить ПК", "ON", false);
+        addAction(actions, "Включить ПК + телевизор LG", "ON_TV", false);
+        addAction(actions, "Переключить LG на ПК", "TV_PC", false);
+        addAction(actions, "Проверить результат команды ТВ", "TV_STATUS", false);
+        addAction(actions, "Остановить попытки включения ТВ", "TV_CANCEL", false);
+        TextView tvHint = text("ТВ настраивается в меню помощника Windows. Для запуска ПК без ТВ отключите там автовключение телевизора. Кнопка «ПК + телевизор» ждёт запуска помощника до 2 минут — держите приложение открытым.", 13, MUTED, false);
+        actions.addView(tvHint, params(-1, -2));
         addAction(actions, "Выключить ПК", "SHUTDOWN", true);
         addAction(actions, "Работа", "PROFILE_WORK", false);
         addAction(actions, "Игры", "PROFILE_GAME", false);
@@ -337,10 +343,11 @@ public class MainActivity extends Activity {
         ((InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE)).hideSoftInputFromWindow(toggleButton.getWindowToken(), 0);
         actionRunning = true;
         setBusy(true, "Проверяю компьютер…");
-        worker.execute(() -> {
+        final int generation = ++actionGeneration;
+        actionTask = worker.submit(() -> {
             String result = WakeController.toggle(this);
             rememberResult("TOGGLE", result);
-            runOnUiThread(() -> { actionRunning = false; if (!isDestroyed()) { setBusy(false, result); refreshPcStatus(); } });
+            runOnUiThread(() -> { if (generation != actionGeneration) return; actionRunning = false; if (!isDestroyed()) { setBusy(false, result); refreshPcStatus(); } });
         });
     }
 
@@ -357,14 +364,36 @@ public class MainActivity extends Activity {
     }
 
     private boolean actionRunning;
+    private java.util.concurrent.Future<?> actionTask;
+    private int actionGeneration;
     private void executeAction(String action) {
+        if (action.equals("TV_CANCEL")) {
+            final int generation = ++actionGeneration;
+            if (actionTask != null) actionTask.cancel(true);
+            actionRunning = true;
+            saveSettings();
+            setBusy(true, "Останавливаю ожидание и попытки включения ТВ…");
+            statusWorker.execute(() -> {
+                String result = WakeController.execute(this, action);
+                rememberResult(action, result);
+                runOnUiThread(() -> {
+                    if (generation != actionGeneration) return;
+                    actionRunning = false;
+                    if (!isDestroyed()) setBusy(false, result);
+                });
+            });
+            return;
+        }
         if (actionRunning) return;
         actionRunning = true;
-        setBusy(true, "Отправляю команду…");
-        worker.execute(() -> {
+        saveSettings();
+        setBusy(true, action.equals("ON_TV") ? "Ожидаю Windows и телевизор… Не закрывайте приложение." : "Отправляю команду…");
+        final int generation = ++actionGeneration;
+        actionTask = worker.submit(() -> {
             String result = WakeController.execute(this, action);
             rememberResult(action, result);
             runOnUiThread(() -> {
+                if (generation != actionGeneration) return;
                 actionRunning = false;
                 if (!isDestroyed()) { setBusy(false, result); refreshPcStatus(); }
             });

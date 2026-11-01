@@ -98,7 +98,7 @@ final class WakeController {
     static String toggle(Context context) { return execute(context, "TOGGLE"); }
 
     static String execute(Context context, String action) {
-        if (!java.util.Arrays.asList("ON", "TOGGLE", "SHUTDOWN", "RESTART", "SLEEP", "PROFILE_WORK", "PROFILE_GAME", "PROFILE_CINEMA").contains(action))
+        if (!java.util.Arrays.asList("ON", "ON_TV", "TV_PC", "TV_STATUS", "TV_CANCEL", "TOGGLE", "SHUTDOWN", "RESTART", "SLEEP", "PROFILE_WORK", "PROFILE_GAME", "PROFILE_CINEMA").contains(action))
             return "Ошибка: неизвестная команда.";
         SharedPreferences p = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         String mac = p.getString("mac", "").trim();
@@ -111,6 +111,10 @@ final class WakeController {
             InetAddress target = resolveIpv4(host);
             int port = Integer.parseInt(portText);
             byte[] key = hexToBytes(keyText);
+            if (action.equals("ON_TV")) {
+                if (key == null) return "Ошибка: добавьте ключ Windows-помощника.";
+                return wakeWithTv(target, port, mac, key);
+            }
             if (action.equals("ON") || (action.equals("TOGGLE") && key == null)) {
                 sendMagicPacket(target, port, mac); return "Пакет пробуждения отправлен.";
             }
@@ -123,24 +127,70 @@ final class WakeController {
             }
             try (Session active = session) {
                 String command = action.equals("TOGGLE") ? "SHUTDOWN" : action;
-                String packet = "WM1|" + command + "|" + active.nonce + "|" + sign(key, command + "|" + active.nonce);
-                // Retry the exact signed packet from the same socket. The helper executes it at most once.
-                for (int attempt = 0; attempt < 2; attempt++) {
-                    sendText(active.socket, target, port, packet);
-                    try {
-                        String reply = receiveText(active.socket, target);
-                        if (validReply(reply, command + "_ACCEPTED", active.nonce, key))
-                            return command.equals("SHUTDOWN") ? "Команда выключения принята. ПК выключится через 10 секунд." : "Команда принята: " + command;
-                        if (validReply(reply, command + "_NOT_CONFIGURED", active.nonce, key)) return "Ошибка: настройте профиль в помощнике на ПК.";
-                        if (validReply(reply, command + "_FAILED", active.nonce, key)) return "Ошибка: Windows не удалось запустить программу.";
-                        return "Ошибка: подпись подтверждения не совпадает.";
-                    } catch (SocketTimeoutException ignored) { }
-                }
-                return "Ошибка: нет подтверждения. Команда могла выполниться; проверьте ПК.";
+                String reply = commandReply(active, key, command);
+                if (reply.equals(command + "_ACCEPTED"))
+                    return command.equals("SHUTDOWN") ? "Команда выключения принята. ПК выключится через 10 секунд."
+                            : command.equals("TV_CANCEL") ? "Запрошена остановка попыток ТВ. Уже выполненное переключение не отменяется."
+                            : command.equals("TV_PC") ? "Запрос ТВ принят. Результат — в диагностике помощника."
+                            : "Команда принята: " + command;
+                if (reply.endsWith("_NOT_CONFIGURED")) return "Ошибка: настройте ТВ или профиль в помощнике на ПК.";
+                if (reply.equals("TV_PC_BUSY")) return "Управление телевизором уже выполняется.";
+                if (reply.equals("TV_STATUS_OK")) return "Телевизор подтвердил переключение HDMI.";
+                if (reply.equals("TV_STATUS_BUSY")) return "Телевизор ещё включается.";
+                if (reply.equals("TV_STATUS_IDLE")) return "Команд телевизору ещё не было после запуска помощника.";
+                return "Ошибка: команда не выполнена. Проверьте диагностику помощника.";
             }
         } catch (SecurityException ex) { return "Ошибка: помощник ответил, но ключ не совпадает."; }
         catch (java.net.UnknownHostException ex) { return "Ошибка: DDNS/IP не найден."; }
+        catch (InterruptedException ex) { Thread.currentThread().interrupt(); return "Ожидание отменено. Уже принятая команда ТВ могла выполниться."; }
+        catch (java.io.IOException ex) { return "Ошибка: " + ex.getMessage(); }
         catch (Exception ex) { return "Ошибка: сеть или порт недоступны."; }
+    }
+
+    private static String commandReply(Session session, byte[] key, String command) throws Exception {
+        String packet = "WM1|" + command + "|" + session.nonce + "|" + sign(key, command + "|" + session.nonce);
+        for (int attempt = 0; attempt < 2; attempt++) {
+            if (Thread.currentThread().isInterrupted()) throw new InterruptedException();
+            sendText(session.socket, session.address, session.port, packet);
+            try {
+                String reply = receiveText(session.socket, session.address);
+                for (String suffix : new String[]{"ACCEPTED", "NOT_CONFIGURED", "FAILED", "BUSY", "OK", "IDLE"}) {
+                    String verb = command + "_" + suffix;
+                    if (validReply(reply, verb, session.nonce, key)) return verb;
+                }
+                throw new SecurityException("Неверная подпись подтверждения.");
+            } catch (SocketTimeoutException ignored) { }
+        }
+        throw new java.io.IOException("Нет подтверждения: команда могла выполниться.");
+    }
+
+    private static String wakeWithTv(InetAddress target, int port, String mac, byte[] key) throws Exception {
+        // The PC must first boot and start its user-session helper. No TV credentials leave the PC.
+        Session session = null;
+        try { session = connect(target, port, key); }
+        catch (SocketTimeoutException | java.net.PortUnreachableException offline) { sendMagicPacket(target, port, mac); }
+        long deadline = android.os.SystemClock.elapsedRealtime() + 120_000;
+        while (session == null && android.os.SystemClock.elapsedRealtime() < deadline) {
+            Thread.sleep(2000);
+            try { session = connect(target, port, key); }
+            catch (SocketTimeoutException | java.net.PortUnreachableException offline) { }
+        }
+        if (session == null) return "Ошибка: ПК не запустил помощник за 2 минуты. Войдите в Windows и повторите команду.";
+        try (Session ready = session) {
+            String reply = commandReply(ready, key, "TV_PC");
+            if (reply.equals("TV_PC_NOT_CONFIGURED")) return "Ошибка: выполните сопряжение LG TV в помощнике Windows 1.4.0.";
+            if (!reply.equals("TV_PC_ACCEPTED") && !reply.equals("TV_PC_BUSY")) return "Ошибка: помощник не принял управление ТВ.";
+        }
+        deadline = android.os.SystemClock.elapsedRealtime() + 70_000;
+        while (android.os.SystemClock.elapsedRealtime() < deadline) {
+            Thread.sleep(2000);
+            try (Session status = connect(target, port, key)) {
+                String reply = commandReply(status, key, "TV_STATUS");
+                if (reply.equals("TV_STATUS_OK")) return "Телевизор подтвердил HDMI компьютера.";
+                if (!reply.equals("TV_STATUS_BUSY")) return "Ошибка: телевизор не подтвердил переключение. Проверьте диагностику на ПК.";
+            }
+        }
+        return "Ошибка: истекло ожидание ТВ. Команда могла выполниться; проверьте экран и диагностику.";
     }
 
     private static boolean validReply(String reply, String verb, String nonce, byte[] key) {
