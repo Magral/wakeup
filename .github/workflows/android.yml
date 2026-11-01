@@ -1,6 +1,7 @@
 name: Build Android APK
 
 on:
+  pull_request:
   push:
     branches: [main]
   workflow_dispatch:
@@ -58,7 +59,15 @@ jobs:
           rm -f "$ANDROID_KEYSTORE_PATH"
 
       - name: Build Windows helper
-        run: dotnet build pc-agent/WakeMiniAgent.csproj --configuration Release
+        run: dotnet publish pc-agent/WakeMiniAgent.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true --output publish/win-x64
+
+      - name: Save Windows helper artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WakeMini-Windows-preview
+          path: publish/win-x64/WakeMiniAgent.exe
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Save APK artifact
         uses: actions/upload-artifact@v4

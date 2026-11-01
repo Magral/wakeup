@@ -56,6 +56,15 @@ with tempfile.TemporaryDirectory() as temp:
                     stranger.recv(256)
                     raise AssertionError('Confirmation leaked to a different UDP endpoint')
                 except socket.timeout: pass
+            for command, expected in [('TV_STATUS', 'TV_STATUS_IDLE'), ('TV_PC', 'TV_PC_NOT_CONFIGURED'), ('TV_CANCEL', 'TV_CANCEL_ACCEPTED')]:
+                token = secrets.token_hex(16)
+                client.send(('WM1|PING|' + token).encode())
+                assert client.recv(256) == signed('ONLINE', token)
+                request = signed(command, token)
+                client.send(request)
+                assert client.recv(256) == signed(expected, token), command
+                client.send(request)
+                assert client.recv(256) == signed(expected, token), 'TV acknowledgement retry failed'
         print('Real Windows agent: signed probe, duplicate acknowledgements, single execution and endpoint binding passed.')
     finally:
         process.terminate()
