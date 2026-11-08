@@ -81,3 +81,34 @@ using (var lifetime = new CancellationTokenSource(TimeSpan.FromSeconds(12)))
     client.Dispose(); lifetime.Cancel(); await server;
 }
 Console.WriteLine("Native voice bridge checks passed: framing, request binding, real named-pipe round trip and cancellation.");
+// Exercise the actual WinExe native-host entry point with redirected binary stdio.
+if (OperatingSystem.IsWindows() && args.Length == 1)
+{
+    using var lifetime = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+    var bridge = new VoiceNativeBridge();
+    var server = bridge.RunServerAsync(lifetime.Token);
+    using var host = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(Path.GetFullPath(args[0])) {
+        Arguments = "chrome-extension://" + VoiceExtensionIdentity.Id + "/", UseShellExecute = false,
+        RedirectStandardInput = true, RedirectStandardOutput = true, CreateNoWindow = true
+    }) ?? throw new Exception("Native host failed to launch");
+    try
+    {
+        while (!bridge.Connected) await Task.Delay(20, lifetime.Token);
+        var result = bridge.SendAsync("stop", lifetime.Token);
+        using var request = System.Text.Json.JsonDocument.Parse((await VoiceFrames.ReadAsync(host.StandardOutput.BaseStream, lifetime.Token))!);
+        var id = request.RootElement.GetProperty("id").GetString();
+        Assert(request.RootElement.GetProperty("action").GetString() == "stop", "Native host changed command");
+        await VoiceFrames.WriteAsync(host.StandardInput.BaseStream,
+            System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new {id, ok = true, code = "VOICE_UI_STOPPED"}), lifetime.Token);
+        Assert(await result == "VOICE_UI_STOPPED", "Native host response did not reach helper");
+        host.StandardInput.Close();
+        await host.WaitForExitAsync(lifetime.Token);
+        Assert(host.ExitCode == 0, "Native host failed on clean EOF");
+    }
+    finally
+    {
+        if (!host.HasExited) host.Kill();
+        lifetime.Cancel(); await server;
+    }
+    Console.WriteLine("Actual Windows native host binary stdio round trip passed.");
+}
