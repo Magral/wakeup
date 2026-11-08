@@ -11,15 +11,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Download already tested Windows EXE
+      - name: Download exact tested preview archive
         uses: actions/download-artifact@v4
         with:
-          name: WakeMini-Windows-preview
-          path: artifact
-          run-id: 42466911576
+          name: WakeMini-1.5.1-preview
+          path: release
+          run-id: 42466908092
           github-token: ${{ github.token }}
       - name: Repackage exact delivered contents and verify hashes
-        run: python scripts/package-delivered-preview.py
+        run: |
+          echo '7d8eb71cc9db4b77c976e53d84fd2154654584cd533ae5eb86cfbf30ad849514  release/WakeMini-1.5.1-preview.zip' | sha256sum -c -
+          python -m zipfile -t release/WakeMini-1.5.1-preview.zip
       - name: Write release notes
         run: |
           cat > release-notes.md <<'NOTES'
@@ -27,7 +29,7 @@ jobs:
           
           Запуск и завершение голосового разговора ChatGPT через расширение, без API-ключа. Chrome нужно оставить запущенным. Работа без переключения окна игры на ПК пользователя ещё не подтверждена.
           
-          В архив включён проверенный Windows EXE из успешной сборки 42466911576 (исходники: 24306ea3c2046891efb9b96cbf49403b7077e89e). Все семь файлов сверяются по SHA-256 с ранее предоставленным архивом. Android обновлять не требуется. Инструкция обновления находится внутри ZIP.
+          Архив взят без изменений из успешной проверочной сборки 42466908092 (исходники: 24306ea3c2046891efb9b96cbf49403b7077e89e). SHA-256 всего ZIP сверяется с ранее предоставленным архивом. Android обновлять не требуется. Инструкция обновления находится внутри ZIP.
           NOTES
       - uses: softprops/action-gh-release@v2
         with:
