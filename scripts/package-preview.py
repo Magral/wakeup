@@ -6,16 +6,16 @@ import zipfile
 root = Path(__file__).resolve().parents[1]
 output = root / 'publish' / 'bundle'
 output.mkdir(parents=True, exist_ok=True)
-cloud = output / 'WakeMini-Alice-Cloud-1.5.1.zip'
+cloud = output / 'WakeMini-Alice-Cloud-1.5.2.zip'
 with zipfile.ZipFile(cloud, 'w', zipfile.ZIP_DEFLATED) as archive:
     for name in ['main.py', 'README.md', 'environment.example.json']:
         archive.write(root / 'alice-cloud' / name, name)
-bundle = output / 'WakeMini-1.5.1-preview.zip'
+bundle = output / 'WakeMini-1.5.2-preview.zip'
 with zipfile.ZipFile(bundle, 'w', zipfile.ZIP_DEFLATED) as archive:
     for source, target in [
         (root / 'publish' / 'package' / 'WakeMiniAgent.exe', 'WakeMiniAgent.exe'),
         (root / 'pc-agent' / 'THIRD-PARTY-NOTICES.txt', 'THIRD-PARTY-NOTICES.txt'),
-        (root / 'docs' / 'UPDATE-1.5.1.md', 'README.md'),
+        (root / 'docs' / 'UPDATE-1.5.2.md', 'README.md'),
         (cloud, cloud.name),
     ]:
         archive.write(source, target)

@@ -81,9 +81,17 @@ internal static partial class Program
         {
             using var udp = new UdpClient(new IPEndPoint(IPAddress.Any, Port));
             Log(baseDirectory, $"UDP-порт {Port} открыт; помощник работает в трее.");
+            udp.Client.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.PacketInformation, true);
             while (!cancellationToken.IsCancellationRequested)
             {
-                var datagram = await udp.ReceiveAsync(cancellationToken);
+                var buffer = new byte[257];
+                SocketReceiveMessageFromResult received;
+                try { received = await udp.Client.ReceiveMessageFromAsync(buffer.AsMemory(), SocketFlags.None,
+                    new IPEndPoint(IPAddress.Any, 0), cancellationToken); }
+                catch (SocketException ex) when (ex.SocketErrorCode == SocketError.MessageSize) { continue; }
+                if ((received.SocketFlags & SocketFlags.Truncated) != 0) continue;
+                var datagram = new IncomingPacket(buffer[..received.ReceivedBytes],
+                    (IPEndPoint)received.RemoteEndPoint, received.PacketInformation.Interface);
                 _ = HandleDatagramAsync(udp, datagram, baseDirectory, key);
             }
         }
@@ -96,7 +104,7 @@ internal static partial class Program
         }
     }
 
-    private static async Task HandleDatagramAsync(UdpClient udp, UdpReceiveResult datagram, string baseDirectory, byte[] key)
+    private static async Task HandleDatagramAsync(UdpClient udp, IncomingPacket datagram, string baseDirectory, byte[] key)
     {
         try
         {
@@ -112,7 +120,7 @@ internal static partial class Program
                 var expiry = DateTimeOffset.UtcNow.AddSeconds(15).ToUnixTimeMilliseconds();
                 if (!Challenges.TryAdd(fields[2], new Challenge(expiry, datagram.RemoteEndPoint))) return;
                 var response = $"WM1|ONLINE|{fields[2]}|{Sign(key, $"ONLINE|{fields[2]}")}";
-                await SendAsync(udp, response, datagram.RemoteEndPoint);
+                await SendAsync(udp, response, datagram.RemoteEndPoint, datagram.InterfaceIndex);
                 return;
             }
 
@@ -126,7 +134,7 @@ internal static partial class Program
                 var endpoint = datagram.RemoteEndPoint.ToString();
                 if (Ledger.Find(nonce, command, endpoint) is string previous)
                 {
-                    await SendAsync(udp, previous, datagram.RemoteEndPoint);
+                    await SendAsync(udp, previous, datagram.RemoteEndPoint, datagram.InterfaceIndex);
                     return;
                 }
                 if (!Challenges.TryGetValue(nonce, out var challenge)
@@ -174,7 +182,7 @@ internal static partial class Program
                 }
                 var reply = SignedReply(key, verb, nonce);
                 Ledger.Remember(nonce, command, endpoint, reply);
-                await SendAsync(udp, reply, datagram.RemoteEndPoint);
+                await SendAsync(udp, reply, datagram.RemoteEndPoint, datagram.InterfaceIndex);
             }
             finally { CommandGate.Release(); }
         }
@@ -217,10 +225,22 @@ internal static partial class Program
         }
     }
 
-    private static async Task SendAsync(UdpClient udp, string text, IPEndPoint endpoint)
+    private sealed record IncomingPacket(byte[] Buffer, IPEndPoint RemoteEndPoint, int InterfaceIndex);
+    private static readonly SemaphoreSlim ReplyGate = new(1, 1);
+    private static async Task SendAsync(UdpClient udp, string text, IPEndPoint endpoint, int interfaceIndex)
     {
         var bytes = Encoding.UTF8.GetBytes(text);
-        await udp.SendAsync(bytes, bytes.Length, endpoint);
+        await ReplyGate.WaitAsync();
+        try
+        {
+            // Windows IP_UNICAST_IF takes an interface index in network byte order.
+            // Constrain this socket only; never change system routes or VPN settings.
+            udp.Client.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.UnicastInterface,
+                IPAddress.HostToNetworkOrder(interfaceIndex));
+            try { await udp.SendAsync(bytes, bytes.Length, endpoint); }
+            finally { udp.Client.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.UnicastInterface, 0); }
+        }
+        finally { ReplyGate.Release(); }
     }
 
     private static void PruneChallenges()
