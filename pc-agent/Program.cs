@@ -235,10 +235,10 @@ internal static partial class Program
         {
             // Windows IP_UNICAST_IF takes an interface index in network byte order.
             // Constrain this socket only; never change system routes or VPN settings.
-            udp.Client.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.UnicastInterface,
+            udp.Client.SetSocketOption(SocketOptionLevel.IP, (SocketOptionName)31 /* IP_UNICAST_IF, Windows SDK ws2ipdef.h */,
                 IPAddress.HostToNetworkOrder(interfaceIndex));
             try { await udp.SendAsync(bytes, bytes.Length, endpoint); }
-            finally { udp.Client.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.UnicastInterface, 0); }
+            finally { udp.Client.SetSocketOption(SocketOptionLevel.IP, (SocketOptionName)31 /* IP_UNICAST_IF, Windows SDK ws2ipdef.h */, 0); }
         }
         finally { ReplyGate.Release(); }
     }
