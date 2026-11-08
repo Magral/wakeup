@@ -1,0 +1,46 @@
+name: Publish cloud diagnostics 1.5.3
+on:
+  push:
+    branches: [release/wakemini-1.5.1-preview]
+    paths: [.github/workflows/publish-cloud-1.5.3.yml]
+permissions:
+  contents: write
+jobs:
+  cloud:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: cc948fa4a49d769ac06779de74e06e233811af08
+      - run: python -m unittest discover -s alice-cloud/tests -v
+      - name: Validate PowerShell syntax
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'scripts/Test-WakeMini-Cloud.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count) { $errors | Format-List; exit 1 }
+      - name: Package cloud update
+        run: |
+          mkdir release
+          python - <<'PY'
+          import zipfile
+          from pathlib import Path
+          with zipfile.ZipFile('release/WakeMini-Alice-Cloud-1.5.3.zip','w',zipfile.ZIP_DEFLATED) as z:
+              for name in ['main.py','README.md','environment.example.json']:
+                  z.write(Path('alice-cloud')/name,name)
+          PY
+          cp scripts/Test-WakeMini-Cloud.ps1 release/
+          cp docs/CLOUD-1.5.3.md release/README.md
+          cd release
+          sha256sum WakeMini-Alice-Cloud-1.5.3.zip Test-WakeMini-Cloud.ps1 README.md > SHA256SUMS.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.5.3-cloud-preview
+          name: Wake Mini — облачная диагностика 1.5.3
+          target_commitish: cc948fa4a49d769ac06779de74e06e233811af08
+          prerelease: true
+          make_latest: false
+          body_path: docs/CLOUD-1.5.3.md
+          files: release/*
+          fail_on_unmatched_files: true
