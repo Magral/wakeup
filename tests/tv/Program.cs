@@ -34,12 +34,14 @@ listener.Start();
 try
 {
     var settings = new LgTvSettings { Address = "192.168.1.99", Mac = "02:11:22:33:44:55", Hdmi = 3 };
-    int saves = 0;
-    var client = new LgWebOsClient(settings, _ => saves++, (ws, ct) => ws.ConnectAsync(new Uri($"wss://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}"), ct));
-    async Task Scenario(Func<WebSocket, Task> handle, Func<Task> work)
+    int saves = 0, wakes = 0;
+    var client = new LgWebOsClient(settings, _ => saves++, (ws, ct) => ws.ConnectAsync(new Uri($"wss://127.0.0.1:{((IPEndPoint)listener.LocalEndpoint).Port}"), ct), (_, _) => { wakes++; return Task.CompletedTask; });
+    async Task Scenario(Func<WebSocket, Task> handle, Func<Task> work, int connections = 1)
     {
         var serve = Task.Run(async () =>
         {
+            for (var connection = 0; connection < connections; connection++)
+            {
             using var tcp = await listener.AcceptTcpClientAsync(token);
             using var ssl = new SslStream(tcp.GetStream());
             await ssl.AuthenticateAsServerAsync(new SslServerAuthenticationOptions { ServerCertificate = certificate }, token);
@@ -58,6 +60,7 @@ try
             await ssl.WriteAsync(Encoding.ASCII.GetBytes("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: " + accept + "\r\n\r\n"), token);
             using var socket = WebSocket.CreateFromStream(ssl, true, null, Timeout.InfiniteTimeSpan);
             await handle(socket);
+            }
         }, token);
         await Task.WhenAll(work(), serve);
     }
@@ -76,6 +79,11 @@ try
         Assert(registration.GetProperty("type").GetString() == "register", "Not a registration");
         var body = registration.GetProperty("payload");
         Assert(body.TryGetProperty("client-key", out _) == paired, "Wrong pairing credentials");
+        Assert(body.GetProperty("forcePairing").GetBoolean() == !paired, "Explicit pairing was not forced");
+        var manifest = body.GetProperty("manifest");
+        Assert(!manifest.TryGetProperty("signed", out _) && !manifest.TryGetProperty("signatures", out _), "Legacy LG test signature must not be sent");
+        var permissions = manifest.GetProperty("permissions").EnumerateArray().Select(x => x.GetString()).ToArray();
+        Assert(permissions.Contains("LAUNCH") && permissions.Contains("CONTROL_INPUT_TV"), "Required HDMI permissions missing");
         if (paired) Assert(body.GetProperty("client-key").GetString() == "mock-client-key", "Wrong saved key");
         await Send(ws, new { type = "registered", payload = new Dictionary<string, string> { ["client-key"] = "mock-client-key" } });
     }
@@ -90,7 +98,7 @@ try
         Assert(command.GetProperty("payload").GetProperty("inputId").GetString() == "HDMI_3", "Wrong HDMI");
         // Unrelated notifications must not be interpreted as the response.
         await Send(ws, new { id = "unrelated", type = "response", payload = new { returnValue = true } });
-        await Send(ws, new { id = "select-input", type = "response", payload = new { returnValue = success } });
+        await Send(ws, new { id = command.GetProperty("id").GetString(), type = "response", payload = new { returnValue = success } });
     }
     await Scenario(ws => Switch(ws, true), () => client.ShowPcAsync(token));
     await Scenario(ws => Switch(ws, false), () => Reject(() => client.ShowPcAsync(token), "Negative HDMI response accepted"));
@@ -99,6 +107,58 @@ try
         await Read(ws);
         await Send(ws, new { type = "response", payload = new { pairingType = "PROMPT" } });
     }, () => Reject(() => client.ShowPcAsync(token), "Unattended re-pairing accepted"));
+    // 404 on the legacy HDMI API must fall back to the fixed HDMI launcher app.
+    await Scenario(async ws =>
+    {
+        await Register(ws, true);
+        var first = await Read(ws);
+        await Send(ws, new { id = first.GetProperty("id").GetString(), type = "error", error = "404 no such service" });
+        var fallback = await Read(ws);
+        Assert(fallback.GetProperty("uri").GetString() == "ssap://system.launcher/launch", "No launcher fallback");
+        Assert(fallback.GetProperty("payload").GetProperty("id").GetString() == "com.webos.app.hdmi3", "Fallback selected a different HDMI");
+        Assert(first.GetProperty("id").GetString() != fallback.GetProperty("id").GetString(), "Request IDs were reused");
+        await Send(ws, new { id = fallback.GetProperty("id").GetString(), type = "response", payload = new { returnValue = true } });
+    }, () => client.ShowPcAsync(token));
+
+    // Authentication errors are not silently retried or paired again; do not expose raw payload/key.
+    await Scenario(async ws =>
+    {
+        await Read(ws);
+        await Send(ws, new { id = "register", type = "error", error = "401 insufficient permissions " + settings.ClientKey });
+    }, async () =>
+    {
+        try { await client.ShowPcAsync(token); throw new Exception("Registration denial accepted"); }
+        catch (LgTvProtocolException ex)
+        {
+            Assert(ex.Code == 401 && ex.Stage.Contains("регистрация"), "Registration phase/code lost");
+            Assert(!ex.Message.Contains(settings.ClientKey!), "Client key leaked in diagnostics");
+        }
+    });
+
+    await Scenario(async ws =>
+    {
+        await Register(ws, true);
+        var first = await Read(ws);
+        await Send(ws, new { id = first.GetProperty("id").GetString(), type = "error", error = "403 access denied" });
+        var fallback = await Read(ws);
+        await Send(ws, new { id = fallback.GetProperty("id").GetString(), type = "error", error = "401 insufficient permissions" });
+    }, async () =>
+    {
+        try { await client.ShowPcAsync(token); throw new Exception("HDMI permission denial accepted"); }
+        catch (LgTvProtocolException ex) { Assert(ex.Code == 401 && ex.Stage == "system.launcher/launch", "HDMI error phase/code lost"); }
+    });
+
+    var sessions = 0;
+    await Scenario(async ws =>
+    {
+        if (++sessions == 1)
+        {
+            await Read(ws);
+            await ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "TV starting", token);
+        }
+        else await Switch(ws, true);
+    }, () => client.ShowPcAsync(token), connections: 2);
+    Assert(wakes == 1 && sessions == 2, "A closing socket during boot was not retried exactly once");
     Assert(saves == 1, "Normal command rewrote pairing credentials");
 }
 finally { listener.Stop(); }

@@ -103,13 +103,23 @@ internal static partial class Program
             "Если включить автозапуск ТВ, он сработает и после удалённого включения ПК при входе в Windows. " +
             "Для запуска без телевизора отключите эту настройку и используйте кнопку «ПК + телевизор» на телефоне. " +
             "Выключение ПК не выключает телевизор." });
-        var pair = Row(grid, new Button { Text = "Сохранить и выполнить сопряжение с ТВ…", AutoSize = true });
+        var pair = Row(grid, new Button { Text = "Сохранить и выполнить повторное сопряжение с ТВ…", AutoSize = true });
         var save = Row(grid, new Button { Text = "Сохранить настройки", AutoSize = true });
         var test = Row(grid, new Button { Text = "Включить ТВ / переключить на ПК", AutoSize = true });
         var cancel = Row(grid, new Button { Text = "Прекратить попытки включения ТВ", AutoSize = true });
         string message;
         lock (TvLock) message = TvMessage;
         var status = Row(grid, new Label { Text = message, AutoSize = true, MaximumSize = new(700, 0) });
+        using var refresh = new System.Windows.Forms.Timer { Interval = 500 };
+        var lastMessage = message;
+        refresh.Tick += (_, _) =>
+        {
+            if (!pair.Enabled || form.IsDisposed) return;
+            string current;
+            lock (TvLock) current = TvMessage;
+            if (current != lastMessage) { lastMessage = current; status.Text = current; }
+        };
+        refresh.Start();
         using var lifetime = new CancellationTokenSource();
         form.FormClosing += (_, _) => lifetime.Cancel();
         LgTvSettings Capture()
@@ -159,10 +169,11 @@ internal static partial class Program
                 timeout.CancelAfter(TimeSpan.FromSeconds(60));
                 await new LgWebOsClient(updated, value => SaveTvSettings(directory, value)).PairAsync(timeout.Token);
                 settings = updated;
+                Log(directory, "LG TV: новое сопряжение сохранено, разрешён выбор HDMI и запуск HDMI-входа.");
                 if (!form.IsDisposed) status.Text = "Сопряжение сохранено. Можно проверить включение и HDMI.";
             }
             catch (OperationCanceledException) { if (!form.IsDisposed) status.Text = "Сопряжение отменено или истекло время ожидания."; }
-            catch (Exception ex) { if (!form.IsDisposed) status.Text = ex.Message; }
+            catch (Exception ex) { Log(directory, "LG TV сопряжение: " + ex.Message); if (!form.IsDisposed) status.Text = ex.Message; }
             finally { if (!form.IsDisposed) pair.Enabled = save.Enabled = test.Enabled = true; }
         };
         form.ShowDialog();

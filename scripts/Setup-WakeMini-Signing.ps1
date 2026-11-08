@@ -53,4 +53,4 @@ foreach ($name in $values.Keys) {
 $values.Clear(); $password = $null
 & gh workflow run publish-release.yml --repo $repo --ref main
 if ($LASTEXITCODE -ne 0) { throw 'Signing secrets saved, but workflow could not be started. Run Publish Wake Mini release in Actions.' }
-Write-Host "Permanent signing configured. Keep $signingDir on this PC. The signed APK will appear in release v1.4.0."
+Write-Host "Permanent signing configured. Keep $signingDir on this PC. The signed APK will appear in release v1.4.1."

@@ -44,14 +44,27 @@ internal sealed class LgTvSettings
 
 // Local SSAP only. Pair explicitly on the TV; subsequent TLS sessions pin its certificate.
 // No power-off, idle polling, display settings, or incoming TCP listener.
+internal sealed class LgTvProtocolException : InvalidOperationException
+{
+    internal int Code { get; }
+    internal string Stage { get; }
+    internal LgTvProtocolException(int code, string stage) : base(
+        $"LG: {stage}: код {code}. " + (code is 401 or 403
+            ? "Нет разрешения или отклонено сопряжение. Выполните повторное сопряжение и подтвердите запрос на ТВ."
+            : code == 404 ? "Телевизор не поддерживает этот метод управления."
+            : "Телевизор отклонил запрос.")) { Code = code; Stage = stage; }
+}
+
 internal sealed class LgWebOsClient
 {
     private readonly LgTvSettings settings;
     private readonly Action<LgTvSettings> save;
     private readonly Func<ClientWebSocket, CancellationToken, Task>? connect;
+    private readonly Func<IPAddress, CancellationToken, Task>? wake;
     internal LgWebOsClient(LgTvSettings settings, Action<LgTvSettings> save,
-        Func<ClientWebSocket, CancellationToken, Task>? connect = null)
-    { this.settings = settings; this.save = save; this.connect = connect; }
+        Func<ClientWebSocket, CancellationToken, Task>? connect = null,
+        Func<IPAddress, CancellationToken, Task>? wake = null)
+    { this.settings = settings; this.save = save; this.connect = connect; this.wake = wake; }
 
     internal async Task PairAsync(CancellationToken token)
     {
@@ -71,26 +84,51 @@ internal sealed class LgWebOsClient
         if (string.IsNullOrWhiteSpace(settings.ClientKey) || settings.Secure && string.IsNullOrWhiteSpace(settings.CertificateHash))
             throw new InvalidOperationException("Сначала выполните сопряжение с телевизором в настройках Wake Mini.");
         Exception? last = null;
-        // Bounded retries let the network and TV start. Authentication/SSAP failures are not retried.
         for (var attempt = 0; attempt < 12; attempt++)
         {
             token.ThrowIfCancellationRequested();
-            using var socket = NewSocket(false, out _);
-            try { await ConnectAsync(socket, token); }
-            catch (Exception ex) when ((ex is WebSocketException || ex is OperationCanceledException) && !token.IsCancellationRequested)
+            using var socket = NewSocket(false, out var certificate);
+            try
             {
+                await ConnectAsync(socket, token);
+                await RegisterAsync(socket, settings.ClientKey, token);
+                await SelectHdmiAsync(socket, settings.Hdmi, token);
+                return;
+            }
+            catch (Exception ex) when ((ex is WebSocketException || ex is IOException || ex is OperationCanceledException)
+                && !token.IsCancellationRequested)
+            {
+                if (settings.Secure && certificate() is string observed
+                    && !string.Equals(observed, settings.CertificateHash, StringComparison.Ordinal))
+                    throw new InvalidOperationException("Сертификат LG изменился. Проверьте IP телевизора и выполните повторное сопряжение.");
+                // A waking TV can accept TCP/TLS and then close the SSAP socket.
+                // Retry transport startup only, never rejection of credentials/permissions.
                 last = ex;
                 await WakeAsync(address, token);
                 await Task.Delay(2000, token);
-                continue;
             }
-            await RegisterAsync(socket, settings.ClientKey, token);
-            var payload = await RequestAsync(socket, "tv/switchInput", new { inputId = $"HDMI_{settings.Hdmi}" }, token);
+        }
+        throw new IOException("Телевизор не готов к управлению: соединение не установлено или закрывается при загрузке. Проверьте питание, IP/MAC и «Включение ТВ с мобильного».", last);
+    }
+
+    private static async Task SelectHdmiAsync(ClientWebSocket socket, int hdmi, CancellationToken token)
+    {
+        try
+        {
+            var payload = await RequestAsync(socket, "tv/switchInput", new { inputId = $"HDMI_{hdmi}" }, token);
+            Confirm(payload);
+        }
+        catch (LgTvProtocolException ex) when (ex.Code is 401 or 403 or 404)
+        {
+            // Both APIs select the same configured HDMI. Never use caller-supplied app IDs.
+            var payload = await RequestAsync(socket, "system.launcher/launch", new { id = $"com.webos.app.hdmi{hdmi}" }, token);
+            Confirm(payload);
+        }
+        static void Confirm(JsonElement payload)
+        {
             if (!payload.TryGetProperty("returnValue", out var result) || result.ValueKind != JsonValueKind.True)
                 throw new InvalidOperationException("Телевизор не подтвердил переключение HDMI.");
-            return;
         }
-        throw new IOException("Телевизор не ответил. Проверьте питание, IP/MAC и «Включение ТВ с мобильного».", last);
     }
 
     private ClientWebSocket NewSocket(bool pairing, out Func<string?> certificate)
@@ -120,16 +158,16 @@ internal sealed class LgWebOsClient
     {
         var payload = new Dictionary<string, object?>
         {
-            ["pairingType"] = "PROMPT", ["forcePairing"] = false,
-            ["manifest"] = new { manifestVersion = 1, appVersion = "1.4.0",
-                permissions = new[] { "CONTROL_INPUT_TV", "READ_INPUT_DEVICE_LIST" } }
+            ["pairingType"] = "PROMPT", ["forcePairing"] = key == null,
+            ["manifest"] = new { manifestVersion = 1, appVersion = "1.4.1",
+                permissions = new[] { "CONTROL_INPUT_TV", "READ_INPUT_DEVICE_LIST", "LAUNCH" } }
         };
         if (key != null) payload["client-key"] = key;
         await SendAsync(socket, new { id = "register", type = "register", payload }, token);
         while (true)
         {
             var message = await ReceiveAsync(socket, token);
-            ThrowIfError(message);
+            ThrowIfError(message, "сопряжение / регистрация");
             if (message.TryGetProperty("type", out var type) && type.GetString() == "registered"
                 && message.TryGetProperty("payload", out var body) && body.TryGetProperty("client-key", out var clientKey)
                 && !string.IsNullOrWhiteSpace(clientKey.GetString())) return clientKey.GetString()!;
@@ -141,21 +179,32 @@ internal sealed class LgWebOsClient
 
     internal static async Task<JsonElement> RequestAsync(ClientWebSocket socket, string uri, object payload, CancellationToken token)
     {
-        const string id = "select-input";
+        var id = "request-" + Guid.NewGuid().ToString("N");
         await SendAsync(socket, new { id, type = "request", uri = "ssap://" + uri, payload }, token);
         while (true)
         {
             var message = await ReceiveAsync(socket, token);
             if (!message.TryGetProperty("id", out var responseId) || responseId.GetString() != id) continue;
-            ThrowIfError(message);
-            return message.GetProperty("payload").Clone();
+            ThrowIfError(message, uri);
+            var payloadBody = message.GetProperty("payload");
+            if (payloadBody.TryGetProperty("returnValue", out var value) && value.ValueKind == JsonValueKind.False
+                && payloadBody.TryGetProperty("errorCode", out var errorCode) && errorCode.ValueKind == JsonValueKind.Number && errorCode.TryGetInt32(out var code))
+                throw new LgTvProtocolException(code, uri);
+            return payloadBody.Clone();
         }
     }
 
-    private static void ThrowIfError(JsonElement message)
+    private static void ThrowIfError(JsonElement message, string stage)
     {
-        if (message.TryGetProperty("type", out var type) && type.GetString() == "error")
-            throw new InvalidOperationException("Телевизор отклонил команду. Проверьте сопряжение и разрешение управления.");
+        if (!message.TryGetProperty("type", out var type) || type.GetString() != "error") return;
+        var code = 0;
+        if (message.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.String)
+        {
+            var prefix = (error.GetString() ?? "").Split(' ', 2)[0];
+            int.TryParse(prefix, out code);
+        }
+        // Only a code and our local phase are surfaced. Do not echo arbitrary TV JSON or client-key.
+        throw new LgTvProtocolException(code, stage);
     }
 
     private static async Task SendAsync(ClientWebSocket socket, object message, CancellationToken token)
@@ -172,7 +221,7 @@ internal sealed class LgWebOsClient
         do
         {
             result = await socket.ReceiveAsync(new ArraySegment<byte>(buffer), token);
-            if (result.MessageType != WebSocketMessageType.Text) throw new IOException("Телевизор закрыл соединение.");
+            if (result.MessageType != WebSocketMessageType.Text) throw new IOException($"Телевизор закрыл соединение (WebSocket: {result.CloseStatus}).");
             body.Write(buffer, 0, result.Count);
             if (body.Length > 65536) throw new IOException("Слишком большой ответ телевизора.");
         } while (!result.EndOfMessage);
@@ -182,6 +231,7 @@ internal sealed class LgWebOsClient
 
     private async Task WakeAsync(IPAddress address, CancellationToken token)
     {
+        if (wake != null) { await wake(address, token); return; }
         var targets = new HashSet<IPAddress> { address, IPAddress.Broadcast };
         var target = address.GetAddressBytes();
         foreach (var adapter in NetworkInterface.GetAllNetworkInterfaces().Where(n => n.OperationalStatus == OperationalStatus.Up))

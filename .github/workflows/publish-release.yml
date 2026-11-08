@@ -81,20 +81,20 @@ jobs:
           python - <<'PY'
           import zipfile
           from pathlib import Path
-          with zipfile.ZipFile('release/WakeMini-Alice-Cloud-1.4.0.zip','w',zipfile.ZIP_DEFLATED) as z:
+          with zipfile.ZipFile('release/WakeMini-Alice-Cloud-1.4.1.zip','w',zipfile.ZIP_DEFLATED) as z:
               for name in ['main.py','README.md','environment.example.json']:
                   z.write(Path('alice-cloud')/name,name)
           PY
           if [ "$SIGNED" = true ]; then
-            cp app/build/outputs/apk/release/app-release.apk release/WakeMini-1.4.0.apk
-            echo 'Android 1.4.0 подписан постоянным ключом. Windows-помощник: 1.4.0. Облачная функция Алисы не менялась. Добавлены сопряжение LG webOS, включение ТВ с выбором HDMI и отдельная кнопка ПК + телевизор. Автовключение ТВ при старте помощника настраивается отдельно. Инструкции в README.' > release-notes.md
+            cp app/build/outputs/apk/release/app-release.apk release/WakeMini-1.4.1.apk
+            echo 'Android 1.4.1 подписан постоянным ключом. Windows-помощник: 1.4.1. Облачная функция Алисы не менялась. Исправлено управление LG: повторное сопряжение с разрешением LAUNCH, резервный выбор HDMI через launcher, ожидание готовности webOS после разрыва соединения, коды ошибок по этапам без ключей. После обновления EXE выполните повторное сопряжение и подтвердите запрос на ТВ. Инструкции в README.' > release-notes.md
           else
-            echo 'Windows-помощник 1.4.0 готов. Облачная функция Алисы не менялась. Android-код собран, но устанавливаемый APK появится после настройки постоянной подписи: scripts/Setup-WakeMini-Signing.ps1. Прежний APK 1.1.3 остаётся в своём релизе. Инструкции в README.' > release-notes.md
+            echo 'Windows-помощник 1.4.1 готов. Облачная функция Алисы не менялась. Android-код собран, но устанавливаемый APK появится после настройки постоянной подписи: scripts/Setup-WakeMini-Signing.ps1. Прежний APK 1.1.3 остаётся в своём релизе. Инструкции в README.' > release-notes.md
           fi
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.4.0
-          name: Wake Mini 1.4.0
+          tag_name: v1.4.1
+          name: Wake Mini 1.4.1
           target_commitish: ${{ github.sha }}
           body_path: release-notes.md
           files: release/*

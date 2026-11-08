@@ -72,7 +72,7 @@ public class MainActivity extends Activity {
         page.setPadding(dp(22), dp(24), dp(22), dp(22));
         scroll.addView(page);
 
-        TextView eyebrow = text("WAKE MINI 1.4.0", 12, ACCENT, true);
+        TextView eyebrow = text("WAKE MINI 1.4.1", 12, ACCENT, true);
         eyebrow.setLetterSpacing(0.12f);
         page.addView(eyebrow);
         TextView title = text("Управление ПК", 30, TEXT, true);
