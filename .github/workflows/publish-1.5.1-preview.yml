@@ -1,0 +1,41 @@
+name: Publish tested 1.5.1 preview
+on:
+  push:
+    branches: [release/wakemini-1.5.1-preview]
+    paths: [.github/workflows/publish-1.5.1-preview.yml]
+permissions:
+  contents: write
+  actions: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download already tested Windows EXE
+        uses: actions/download-artifact@v4
+        with:
+          name: WakeMini-Windows-preview
+          path: artifact
+          run-id: 42466911576
+          github-token: ${{ github.token }}
+      - name: Repackage exact delivered contents and verify hashes
+        run: python scripts/package-delivered-preview.py
+      - name: Write release notes
+        run: |
+          cat > release-notes.md <<'NOTES'
+          Проверочная сборка Wake Mini 1.5.1: Windows-помощник, расширение Chrome, облачная функция Алисы и инструкция.
+          
+          Запуск и завершение голосового разговора ChatGPT через расширение, без API-ключа. Chrome нужно оставить запущенным. Работа без переключения окна игры на ПК пользователя ещё не подтверждена.
+          
+          В архив включён проверенный Windows EXE из успешной сборки 42466911576 (исходники: 24306ea3c2046891efb9b96cbf49403b7077e89e). Все семь файлов сверяются по SHA-256 с ранее предоставленным архивом. Android обновлять не требуется. Инструкция обновления находится внутри ZIP.
+          NOTES
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.5.1-preview
+          name: Wake Mini 1.5.1 — проверочная сборка
+          target_commitish: 24306ea3c2046891efb9b96cbf49403b7077e89e
+          prerelease: true
+          make_latest: false
+          body_path: release-notes.md
+          files: release/*
+          fail_on_unmatched_files: true
