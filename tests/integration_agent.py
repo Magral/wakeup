@@ -1,4 +1,5 @@
 """Exercise the real Windows agent; only launches our harmless counter, never powers off."""
+import contextlib
 import hashlib
 import hmac
 import json
@@ -26,20 +27,24 @@ with tempfile.TemporaryDirectory() as temp:
     (agent.parent / 'wake-actions.json').write_text(json.dumps(settings))
     process = subprocess.Popen([str(agent)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
-            client.connect(('127.0.0.1', 3000)); client.settimeout(0.5)
+        with contextlib.ExitStack() as sockets:
             # A hosted Windows runner can take several seconds to start WinForms
             # and load .NET. Keep startup tolerance separate from UDP ACK timing.
             startup_deadline = time.monotonic() + 25
             while time.monotonic() < startup_deadline:
                 if process.poll() is not None:
                     raise AssertionError('Agent exited during startup: ' + str(process.returncode))
+                # A fresh socket per startup probe avoids queued Windows ICMP
+                # errors or delayed replies from a probe sent before bind.
+                client = sockets.enter_context(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
+                client.connect(('127.0.0.1', 3000)); client.settimeout(0.5)
                 nonce = secrets.token_hex(16)
                 client.send(('WM1|PING|' + nonce).encode())
                 try:
                     reply = client.recv(256)
                     if reply == signed('ONLINE', nonce): break
                 except (socket.timeout, ConnectionRefusedError, ConnectionResetError): pass
+                client.close()
                 time.sleep(0.1)
             else:
                 log = agent.parent / 'WakeMiniAgent.log'
