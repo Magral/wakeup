@@ -1,0 +1,44 @@
+name: Publish tested 1.5.2 TUN preview
+on:
+  push:
+    branches: [release/wakemini-1.5.1-preview]
+    paths: [.github/workflows/publish-1.5.2-preview.yml]
+permissions:
+  contents: write
+  actions: read
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: WakeMini-1.5.2-preview
+          path: release
+          run-id: 42477664509
+          repository: Magral/wakeup
+          github-token: ${{ github.token }}
+      - name: Verify and extract tested helper
+        run: |
+          cd release
+          sha256sum -c SHA256SUMS.txt
+          python - <<'PY'
+          import zipfile
+          with zipfile.ZipFile('WakeMini-1.5.2-preview.zip') as z:
+              assert z.testzip() is None
+              for name in ['WakeMiniAgent.exe', 'README.md', 'THIRD-PARTY-NOTICES.txt']:
+                  z.extract(name)
+          PY
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.5.2-preview
+          name: Wake Mini 1.5.2 — исправление ответов при TUN
+          target_commitish: 68b35e6b206360a2bfc2b9a0ab376abeb10b0265
+          prerelease: true
+          make_latest: false
+          body: |
+            Проверочная сборка: ответы UDP направляются через интерфейс, получивший запрос, вместо маршрута VPN по умолчанию. Системные маршруты не меняются.
+            Замените только WakeMiniAgent.exe, сохранив wake.key и остальные настройки. Облако, Android и расширение Chrome обновлять не требуется.
+            После замены удалите временный маршрут телефона и проверьте связь через мобильный интернет при включённом TUN, затем сценарий Алисы. Совместимость с конкретной настройкой HAPP ещё требует проверки на вашем ПК.
+            Подробная инструкция и команда удаления временного маршрута находятся в README.md.
+          files: release/*
+          fail_on_unmatched_files: true
