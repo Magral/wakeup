@@ -25,7 +25,7 @@ internal static partial class Program
     {
         lock (TvLock)
         {
-            if (TvOperation != null) return "TV_PC_BUSY";
+            if (TvOperation != null || ChatOperation != null) return "TV_PC_BUSY";
             LgTvSettings settings;
             try
             {
@@ -159,7 +159,7 @@ internal static partial class Program
         pair.Click += async (_, _) =>
         {
             lock (TvLock)
-                if (TvOperation != null) { status.Text = "Сначала остановите текущую команду ТВ."; return; }
+                if (TvOperation != null || ChatOperation != null) { status.Text = "Сначала остановите текущую команду ТВ или подготовку разговора."; return; }
             pair.Enabled = save.Enabled = test.Enabled = false;
             try
             {

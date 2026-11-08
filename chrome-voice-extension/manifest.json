@@ -1,0 +1,30 @@
+{
+  "manifest_version": 3,
+  "name": "Wake Mini — ChatGPT Voice",
+  "version": "1.5.1",
+  "description": "Запуск голоса ChatGPT по явной команде Wake Mini без перевода игры в фон.",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEApUq3FUAIafRJ0c/IZLL+UMJGiznNv89SJHaOsruiAL7FTu7nIKunGA++WgDbbp742FkpPfUl98Ds11tq8cNipVxdQwIfJfnRDELVFtRkgCNFuQzL0N8bvewJZDoMG8QKewC9Etsra+R56/+NAFzq27eGBvEFSUTsIS84fr6sRspjCk9wwIU1fw7Fn3It3uIcKGDz8SYImQkgchUZtgrnQZgPbrYh6LLKuj1iWxsvY698s+qzqQEmdNzG0G4ucJQDfE1IFQEyID1k7sioCg0j3dJq7MwVa7w69VcIbfN5g3XncYxvkyLp1JVcATYX/jwexR7fmiVQPguTUzq7sIiW2wIDAQAB",
+  "permissions": [
+    "nativeMessaging",
+    "alarms",
+    "storage"
+  ],
+  "host_permissions": [
+    "https://chatgpt.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://chatgpt.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle"
+    }
+  ],
+  "minimum_chrome_version": "120"
+}

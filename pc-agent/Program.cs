@@ -24,6 +24,8 @@ internal static partial class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Length > 0 && args[0].StartsWith("chrome-extension://", StringComparison.Ordinal))
+            return VoiceNativeBridge.RunHost(args[0]);
         ApplicationConfiguration.Initialize();
         if (args.Length > 0 && args[0] == "--install-firewall") return InstallFirewallRule();
 
@@ -40,10 +42,12 @@ internal static partial class Program
 
         using var stop = new CancellationTokenSource();
         var serverTask = RunServerAsync(baseDirectory, key, stop.Token);
+        var voiceBridgeTask = VoiceBridge.RunServerAsync(stop.Token);
         using var tray = new AgentTrayContext(baseDirectory);
         Application.Run(tray);
         stop.Cancel();
         try { serverTask.GetAwaiter().GetResult(); } catch (OperationCanceledException) { }
+        try { voiceBridgeTask.GetAwaiter().GetResult(); } catch (OperationCanceledException) { }
         return 0;
     }
 
@@ -77,9 +81,17 @@ internal static partial class Program
         {
             using var udp = new UdpClient(new IPEndPoint(IPAddress.Any, Port));
             Log(baseDirectory, $"UDP-порт {Port} открыт; помощник работает в трее.");
+            udp.Client.SetSocketOption(SocketOptionLevel.IP, SocketOptionName.PacketInformation, true);
             while (!cancellationToken.IsCancellationRequested)
             {
-                var datagram = await udp.ReceiveAsync(cancellationToken);
+                var buffer = new byte[257];
+                SocketReceiveMessageFromResult received;
+                try { received = await udp.Client.ReceiveMessageFromAsync(buffer.AsMemory(), SocketFlags.None,
+                    new IPEndPoint(IPAddress.Any, 0), cancellationToken); }
+                catch (SocketException ex) when (ex.SocketErrorCode == SocketError.MessageSize) { continue; }
+                if ((received.SocketFlags & SocketFlags.Truncated) != 0) continue;
+                var datagram = new IncomingPacket(buffer[..received.ReceivedBytes],
+                    (IPEndPoint)received.RemoteEndPoint, received.PacketInformation.Interface);
                 _ = HandleDatagramAsync(udp, datagram, baseDirectory, key);
             }
         }
@@ -92,19 +104,23 @@ internal static partial class Program
         }
     }
 
-    private static async Task HandleDatagramAsync(UdpClient udp, UdpReceiveResult datagram, string baseDirectory, byte[] key)
+    private static async Task HandleDatagramAsync(UdpClient udp, IncomingPacket datagram, string baseDirectory, byte[] key)
     {
         try
         {
+            // WM1 packets are tiny. Ignore unrelated traffic before decoding it.
+            if (datagram.Buffer.Length > 256) return;
             var text = Encoding.UTF8.GetString(datagram.Buffer);
             var fields = text.Split('|');
             if (fields.Length == 3 && fields[0] == "WM1" && fields[1] == "PING" && IsNonce(fields[2]))
             {
                 PruneChallenges();
+                // Probes are unauthenticated; bound their retained state.
+                if (Challenges.Count >= 4096) return;
                 var expiry = DateTimeOffset.UtcNow.AddSeconds(15).ToUnixTimeMilliseconds();
                 if (!Challenges.TryAdd(fields[2], new Challenge(expiry, datagram.RemoteEndPoint))) return;
                 var response = $"WM1|ONLINE|{fields[2]}|{Sign(key, $"ONLINE|{fields[2]}")}";
-                await SendAsync(udp, response, datagram.RemoteEndPoint);
+                await SendAsync(udp, response, datagram.RemoteEndPoint, datagram.InterfaceIndex);
                 return;
             }
 
@@ -118,15 +134,22 @@ internal static partial class Program
                 var endpoint = datagram.RemoteEndPoint.ToString();
                 if (Ledger.Find(nonce, command, endpoint) is string previous)
                 {
-                    await SendAsync(udp, previous, datagram.RemoteEndPoint);
+                    await SendAsync(udp, previous, datagram.RemoteEndPoint, datagram.InterfaceIndex);
                     return;
                 }
-                if (!Challenges.TryRemove(nonce, out var challenge)
+                if (!Challenges.TryGetValue(nonce, out var challenge)
                     || DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() > challenge.ExpiresAt
                     || !challenge.RemoteEndPoint.Equals(datagram.RemoteEndPoint)) return;
+                // An otherwise signed packet from a different endpoint must
+                // not consume the legitimate sender's one-use challenge.
+                if (!Challenges.TryRemove(nonce, out _)) return;
                 LastRequest = DateTime.Now;
                 string verb;
                 if (command == "TV_PC") verb = StartTv(baseDirectory);
+                else if (command == "CHATGPT") verb = StartConversation(baseDirectory);
+                else if (command == "CHAT_END") verb = StopBackgroundConversation(baseDirectory);
+                else if (command == "CHAT_STATUS") verb = ConversationStatus();
+                else if (command == "CHAT_CANCEL") { CancelConversation(); verb = "CHAT_CANCEL_ACCEPTED"; }
                 else if (command == "TV_STATUS") verb = TvStatus();
                 else if (command == "TV_CANCEL") { CancelTv(); verb = "TV_CANCEL_ACCEPTED"; }
                 else if (command == "LAUNCH" || command.StartsWith("PROFILE_"))
@@ -159,7 +182,7 @@ internal static partial class Program
                 }
                 var reply = SignedReply(key, verb, nonce);
                 Ledger.Remember(nonce, command, endpoint, reply);
-                await SendAsync(udp, reply, datagram.RemoteEndPoint);
+                await SendAsync(udp, reply, datagram.RemoteEndPoint, datagram.InterfaceIndex);
             }
             finally { CommandGate.Release(); }
         }
@@ -173,6 +196,8 @@ internal static partial class Program
     {
         error = null;
         var settings = ReadSettings(baseDirectory);
+        if (settings.UseDesktopModes && profile is "work" or "game")
+            return StartDesktopMode(baseDirectory, profile, out error);
         var selected = profile is null ? null : settings.Profiles.GetValueOrDefault(profile);
         var path = (profile is null ? settings.LaunchPath : selected?.Path)?.Trim();
         if (string.IsNullOrEmpty(path) || !Path.IsPathFullyQualified(path) || !File.Exists(path)
@@ -200,10 +225,22 @@ internal static partial class Program
         }
     }
 
-    private static async Task SendAsync(UdpClient udp, string text, IPEndPoint endpoint)
+    private sealed record IncomingPacket(byte[] Buffer, IPEndPoint RemoteEndPoint, int InterfaceIndex);
+    private static readonly SemaphoreSlim ReplyGate = new(1, 1);
+    private static async Task SendAsync(UdpClient udp, string text, IPEndPoint endpoint, int interfaceIndex)
     {
         var bytes = Encoding.UTF8.GetBytes(text);
-        await udp.SendAsync(bytes, bytes.Length, endpoint);
+        await ReplyGate.WaitAsync();
+        try
+        {
+            // Windows IP_UNICAST_IF takes an interface index in network byte order.
+            // Constrain this socket only; never change system routes or VPN settings.
+            udp.Client.SetSocketOption(SocketOptionLevel.IP, (SocketOptionName)31 /* IP_UNICAST_IF, Windows SDK ws2ipdef.h */,
+                IPAddress.HostToNetworkOrder(interfaceIndex));
+            try { await udp.SendAsync(bytes, bytes.Length, endpoint); }
+            finally { udp.Client.SetSocketOption(SocketOptionLevel.IP, (SocketOptionName)31 /* IP_UNICAST_IF, Windows SDK ws2ipdef.h */, 0); }
+        }
+        finally { ReplyGate.Release(); }
     }
 
     private static void PruneChallenges()
@@ -216,7 +253,7 @@ internal static partial class Program
     private static bool IsNonce(string value) => value.Length == 32 && value.All(Uri.IsHexDigit);
 
     private static bool IsAllowedCommand(string command) =>
-        command is "TV_PC" or "TV_STATUS" or "TV_CANCEL" or "SHUTDOWN" or "RESTART" or "SLEEP" or "LAUNCH" or "PROFILE_WORK" or "PROFILE_GAME" or "PROFILE_CINEMA";
+        command is "CHATGPT" or "CHAT_END" or "CHAT_STATUS" or "CHAT_CANCEL" or "TV_PC" or "TV_STATUS" or "TV_CANCEL" or "SHUTDOWN" or "RESTART" or "SLEEP" or "LAUNCH" or "PROFILE_WORK" or "PROFILE_GAME" or "PROFILE_CINEMA";
 
     private static string SignedReply(byte[] key, string verb, string nonce) =>
         $"WM1|{verb}|{nonce}|{Sign(key, $"{verb}|{nonce}")}";
@@ -307,6 +344,7 @@ internal static partial class Program
         public string? Host { get; set; }
         public string? Mac { get; set; }
         public Dictionary<string, LaunchProfile> Profiles { get; set; } = new();
+        public bool UseDesktopModes { get; set; }
     }
 
     private sealed class AgentTrayContext : ApplicationContext
@@ -330,6 +368,7 @@ internal static partial class Program
             menu.Items.Add(new ToolStripMenuItem("Телевизор LG OLED…", null, (_, _) => ConfigureTv(_baseDirectory)));
             menu.Items.Add(new ToolStripMenuItem("Состояние и диагностика…", null, (_, _) => ShowDiagnostics(_baseDirectory)));
             menu.Items.Add(new ToolStripMenuItem("Профили: Работа / Игры / Кино…", null, (_, _) => ConfigureProfiles(_baseDirectory)));
+            menu.Items.Add(new ToolStripMenuItem("Разговор с ChatGPT / FreeBuds…", null, (_, _) => ConfigureConversation(_baseDirectory)));
             menu.Items.Add(new ToolStripMenuItem("Отменить выключение / перезагрузку", null, (_, _) => CancelShutdown()));
             menu.Items.Add(new ToolStripMenuItem("Настроить приложение…", null, (_, _) => ConfigureApplication()));
             _launchNow = new ToolStripMenuItem("Запустить приложение сейчас", null, (_, _) => LaunchFromTray());
