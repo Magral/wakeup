@@ -186,7 +186,7 @@ class Tests(unittest.TestCase):
 
     @patch('main.authorize')
     def test_restart_and_sleep_are_separate_one_shot_devices(self, auth):
-        for device_id, command in ((main.RESTART_DEVICE_ID, 'RESTART'), (main.SLEEP_DEVICE_ID, 'SLEEP'), (main.APP_DEVICE_ID, 'LAUNCH'), (main.CHAT_DEVICE_ID, 'CHATGPT')):
+        for device_id, command in ((main.RESTART_DEVICE_ID, 'RESTART'), (main.SLEEP_DEVICE_ID, 'SLEEP'), (main.APP_DEVICE_ID, 'LAUNCH')):
             request = event()
             request['payload']['devices'][0]['id'] = device_id
             with patch('main.agent_command') as run:
@@ -201,6 +201,15 @@ class Tests(unittest.TestCase):
         with patch('main.authorize', side_effect=PermissionError), patch('main.power_on') as on:
             with self.assertRaises(PermissionError): main.dispatch(event())
             on.assert_not_called()
+
+    @patch('main.authorize')
+    def test_chat_voice_can_start_and_stop_without_power_action(self, auth):
+        for value, command in ((True, 'CHATGPT'), (False, 'CHAT_END')):
+            request = event(value); request['payload']['devices'][0]['id'] = main.CHAT_DEVICE_ID
+            with patch('main.agent_command') as run, patch('main.power_on') as wake:
+                main.dispatch(request)
+                run.assert_called_once_with(main.settings(), command)
+                wake.assert_not_called()
 
     def test_checks_both_owner_and_oauth_client(self):
         for user in [{'id': 'other', 'login': 'other', 'client_id': 'client'}, {'id': '123', 'login': 'owner', 'client_id': 'other'}]:

@@ -13,6 +13,7 @@ jobs:
       - run: dotnet run --project tests/protocol/ProtocolTests.csproj
       - run: dotnet run --project tests/tv/TvTests.csproj
       - run: dotnet run --project tests/chat/ChatTests.csproj
+      - run: node --test tests/chat/voice-*.test.js
       - run: python -m unittest discover -s alice-cloud/tests -v
   windows-agent:
     runs-on: windows-latest
@@ -42,8 +43,8 @@ jobs:
         run: python scripts/package-preview.py
       - uses: actions/upload-artifact@v4
         with:
-          name: WakeMini-1.5.0-preview
+          name: WakeMini-1.5.1-preview
           path: |
-            publish/bundle/WakeMini-1.5.0-preview.zip
+            publish/bundle/WakeMini-1.5.1-preview.zip
             publish/bundle/SHA256SUMS.txt
           if-no-files-found: error

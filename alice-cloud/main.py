@@ -149,7 +149,7 @@ def connect_agent(cfg, ip):
 
 
 def agent_command(cfg, command):
-    if command not in ('SHUTDOWN', 'RESTART', 'SLEEP', 'LAUNCH', 'CHATGPT', 'PROFILE_WORK', 'PROFILE_GAME', 'PROFILE_CINEMA'):
+    if command not in ('SHUTDOWN', 'RESTART', 'SLEEP', 'LAUNCH', 'CHATGPT', 'CHAT_END', 'PROFILE_WORK', 'PROFILE_GAME', 'PROFILE_CINEMA'):
         raise ValueError('Unsupported agent command')
     ip = socket.gethostbyname(cfg['PC_HOST'])
     sock, nonce = connect_agent(cfg, ip)
@@ -181,7 +181,7 @@ def agent_command(cfg, command):
             raise DeviceError('DEVICE_UNREACHABLE', 'Нет подтверждения. Команда могла выполниться; проверьте компьютер.')
         if validate_reply(reply, command + '_ACCEPTED', nonce, cfg['key']):
             return
-        if (command in ('LAUNCH', 'CHATGPT') or command.startswith('PROFILE_')) and validate_reply(reply, command + '_NOT_CONFIGURED', nonce, cfg['key']):
+        if (command in ('LAUNCH', 'CHATGPT', 'CHAT_END') or command.startswith('PROFILE_')) and validate_reply(reply, command + '_NOT_CONFIGURED', nonce, cfg['key']):
             raise DeviceError('INVALID_ACTION', 'Сначала настройте соответствующее действие в Wake Mini на компьютере.')
         if command == 'CHATGPT' and validate_reply(reply, 'CHATGPT_BUSY', nonce, cfg['key']):
             raise DeviceError('INVALID_ACTION', 'Подготовка разговора или управление телевизором уже выполняется.')
@@ -213,7 +213,7 @@ def dispatch(event):
     LOG.info('smart_home type=%s request_id=%s', str(kind)[:20], json.dumps(request_id))
     answer = {'request_id': request_id}
     if kind == 'discovery':
-        info = {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.5.0'}
+        info = {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.5.1'}
         answer['payload'] = {'user_id': user_id, 'devices': [
             {'id': DEVICE_ID, 'name': 'Компьютер', 'type': 'devices.types.other',
              'description': 'Включение, выключение и проверка связи с Windows',
@@ -293,6 +293,8 @@ def dispatch(event):
             try:
                 if device_id == DEVICE_ID:
                     (power_on if value else power_off)(cfg)
+                elif device_id == CHAT_DEVICE_ID:
+                    agent_command(cfg, 'CHATGPT' if value else 'CHAT_END')
                 elif value:
                     agent_command(cfg, COMMANDS[device_id])
                 else:

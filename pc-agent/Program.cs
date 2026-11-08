@@ -24,6 +24,8 @@ internal static partial class Program
     [STAThread]
     private static int Main(string[] args)
     {
+        if (args.Length > 0 && args[0].StartsWith("chrome-extension://", StringComparison.Ordinal))
+            return VoiceNativeBridge.RunHost(args[0]);
         ApplicationConfiguration.Initialize();
         if (args.Length > 0 && args[0] == "--install-firewall") return InstallFirewallRule();
 
@@ -40,10 +42,12 @@ internal static partial class Program
 
         using var stop = new CancellationTokenSource();
         var serverTask = RunServerAsync(baseDirectory, key, stop.Token);
+        var voiceBridgeTask = VoiceBridge.RunServerAsync(stop.Token);
         using var tray = new AgentTrayContext(baseDirectory);
         Application.Run(tray);
         stop.Cancel();
         try { serverTask.GetAwaiter().GetResult(); } catch (OperationCanceledException) { }
+        try { voiceBridgeTask.GetAwaiter().GetResult(); } catch (OperationCanceledException) { }
         return 0;
     }
 
@@ -135,6 +139,7 @@ internal static partial class Program
                 string verb;
                 if (command == "TV_PC") verb = StartTv(baseDirectory);
                 else if (command == "CHATGPT") verb = StartConversation(baseDirectory);
+                else if (command == "CHAT_END") verb = StopBackgroundConversation(baseDirectory);
                 else if (command == "CHAT_STATUS") verb = ConversationStatus();
                 else if (command == "CHAT_CANCEL") { CancelConversation(); verb = "CHAT_CANCEL_ACCEPTED"; }
                 else if (command == "TV_STATUS") verb = TvStatus();
@@ -228,7 +233,7 @@ internal static partial class Program
     private static bool IsNonce(string value) => value.Length == 32 && value.All(Uri.IsHexDigit);
 
     private static bool IsAllowedCommand(string command) =>
-        command is "CHATGPT" or "CHAT_STATUS" or "CHAT_CANCEL" or "TV_PC" or "TV_STATUS" or "TV_CANCEL" or "SHUTDOWN" or "RESTART" or "SLEEP" or "LAUNCH" or "PROFILE_WORK" or "PROFILE_GAME" or "PROFILE_CINEMA";
+        command is "CHATGPT" or "CHAT_END" or "CHAT_STATUS" or "CHAT_CANCEL" or "TV_PC" or "TV_STATUS" or "TV_CANCEL" or "SHUTDOWN" or "RESTART" or "SLEEP" or "LAUNCH" or "PROFILE_WORK" or "PROFILE_GAME" or "PROFILE_CINEMA";
 
     private static string SignedReply(byte[] key, string verb, string nonce) =>
         $"WM1|{verb}|{nonce}|{Sign(key, $"{verb}|{nonce}")}";

@@ -3,9 +3,13 @@ internal sealed class ChatPreparation(
     Func<CancellationToken, Task> releaseTv,
     Func<CancellationToken, Task> connectHeadset,
     Action selectAudio,
-    Action openChat,
-    Action<string> progress)
+    Func<CancellationToken, Task> openChat,
+    Action<string> progress,
+    string readyMessage = "Звук и микрофон выбраны. Запрос на открытие ChatGPT отправлен; для разговора нажмите кнопку голоса на странице.")
 {
+    internal ChatPreparation(Func<CancellationToken, Task> releaseTv, Func<CancellationToken, Task> connectHeadset,
+        Action selectAudio, Action openChat, Action<string> progress)
+        : this(releaseTv, connectHeadset, selectAudio, _ => { openChat(); return Task.CompletedTask; }, progress) { }
     internal async Task RunAsync(CancellationToken token)
     {
         token.ThrowIfCancellationRequested();
@@ -18,8 +22,8 @@ internal sealed class ChatPreparation(
         progress("Выбираю наушники и микрофон в Windows…");
         selectAudio();
         token.ThrowIfCancellationRequested();
-        progress("Открываю ChatGPT в Chrome…");
-        openChat();
-        progress("Звук и микрофон выбраны. Запрос на открытие ChatGPT отправлен; для разговора нажмите кнопку голоса на странице.");
+        progress("Запускаю ChatGPT…");
+        await openChat(token);
+        progress(readyMessage);
     }
 }
