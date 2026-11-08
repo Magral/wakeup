@@ -161,15 +161,26 @@ def connect_agent(cfg, ip):
 def agent_command(cfg, command):
     if command not in ('SHUTDOWN', 'RESTART', 'SLEEP', 'LAUNCH', 'CHATGPT', 'CHAT_END', 'PROFILE_WORK', 'PROFILE_GAME', 'PROFILE_CINEMA'):
         raise ValueError('Unsupported agent command')
-    ip = socket.gethostbyname(cfg['PC_HOST'])
-    sock, nonce = connect_agent(cfg, ip)
+    try:
+        ip = socket.gethostbyname(cfg['PC_HOST'])
+    except OSError:
+        raise DeviceError('DEVICE_UNREACHABLE', 'WM154 DNS: не удалось определить адрес ПК.') from None
+    try:
+        sock, nonce = connect_agent(cfg, ip)
+    except DeviceError as exc:
+        raise DeviceError(exc.code, 'WM154 PING: ' + exc.message) from None
+    except OSError:
+        raise DeviceError('DEVICE_UNREACHABLE', 'WM154 PING_IO: сетевая ошибка при проверке помощника.') from None
     with sock:
         sock.settimeout(0.35)
         message = command + '|' + nonce
         packet = 'WM1|' + message + '|' + sign(cfg['key'], message)
         reply = None
         for attempt in range(2):
-            sock.send(packet.encode('ascii'))
+            try:
+                sock.send(packet.encode('ascii'))
+            except OSError:
+                raise DeviceError('DEVICE_UNREACHABLE', 'WM154 SEND: не удалось отправить команду ПК.') from None
             deadline = time.monotonic() + 0.35
             try:
                 while True:
@@ -187,8 +198,10 @@ def agent_command(cfg, command):
                 break
             except (socket.timeout, ConnectionRefusedError):
                 LOG.warning('agent_ack_timeout command=%s attempt=%s', command, attempt + 1)
+            except OSError:
+                raise DeviceError('DEVICE_UNREACHABLE', 'WM154 ACK_IO: сетевая ошибка при ожидании подтверждения.') from None
         if reply is None:
-            raise DeviceError('DEVICE_UNREACHABLE', 'Нет подтверждения. Команда могла выполниться; проверьте компьютер.')
+            raise DeviceError('DEVICE_UNREACHABLE', 'WM154 ACK_TIMEOUT: ПК ответил на PING, но не подтвердил команду. Она могла выполниться.')
         if validate_reply(reply, command + '_ACCEPTED', nonce, cfg['key']):
             return
         if (command in ('LAUNCH', 'CHATGPT', 'CHAT_END') or command.startswith('PROFILE_')) and validate_reply(reply, command + '_NOT_CONFIGURED', nonce, cfg['key']):
@@ -223,7 +236,7 @@ def dispatch(event):
     LOG.info('smart_home type=%s request_id=%s', str(kind)[:20], json.dumps(request_id))
     answer = {'request_id': request_id}
     if kind == 'discovery':
-        info = {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.5.3'}
+        info = {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.5.4'}
         answer['payload'] = {'user_id': user_id, 'devices': [
             {'id': DEVICE_ID, 'name': 'Компьютер', 'type': 'devices.types.other',
              'description': 'Включение, выключение и проверка связи с Windows',
@@ -313,7 +326,8 @@ def dispatch(event):
                 LOG.warning('agent_action_error command_device=%s code=%s', device_id, exc.code)
                 action_result = {'status': 'ERROR', 'error_code': exc.code, 'error_message': exc.message}
             except OSError:
-                action_result = {'status': 'ERROR', 'error_code': 'DEVICE_UNREACHABLE'}
+                action_result = {'status': 'ERROR', 'error_code': 'DEVICE_UNREACHABLE',
+                                 'error_message': 'WM154 WAKE_IO: сетевая ошибка при отправке пакета включения.'}
             result['capabilities'] = [{'type': CAPABILITY, 'state': {'instance': 'on', 'action_result': action_result}}]
     answer['payload'] = {'devices': [result]}
     return answer
@@ -405,7 +419,7 @@ def _diagnostic(event):
     finally:
         _TRACE.reset(marker)
     with _RECENT_LOCK: recent = list(_RECENT)
-    body = {'version': '1.5.3', 'probe': result, 'elapsed_ms': round((time.perf_counter() - started) * 1000),
+    body = {'version': '1.5.4', 'probe': result, 'elapsed_ms': round((time.perf_counter() - started) * 1000),
             'stages': trace, 'recent_instance_requests': recent,
             'note': 'Read-only signed probe. No power or app commands. History is instance-local and may be empty.'}
     return {'statusCode': 200, 'headers': {'Content-Type': 'application/json', 'Cache-Control': 'no-store'},
