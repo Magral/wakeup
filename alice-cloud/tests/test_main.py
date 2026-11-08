@@ -38,7 +38,7 @@ class Tests(unittest.TestCase):
                 self.assertEqual(packet, b'\xff' * 6 + bytes.fromhex('001122aabbcc') * 16)
 
     def test_commands_interoperate_over_real_udp(self):
-        for command in ('SHUTDOWN', 'RESTART', 'SLEEP', 'LAUNCH'):
+        for command in ('SHUTDOWN', 'RESTART', 'SLEEP', 'LAUNCH', 'CHATGPT'):
             failures = []
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server:
                 server.bind(('127.0.0.1', 0))
@@ -186,7 +186,7 @@ class Tests(unittest.TestCase):
 
     @patch('main.authorize')
     def test_restart_and_sleep_are_separate_one_shot_devices(self, auth):
-        for device_id, command in ((main.RESTART_DEVICE_ID, 'RESTART'), (main.SLEEP_DEVICE_ID, 'SLEEP'), (main.APP_DEVICE_ID, 'LAUNCH')):
+        for device_id, command in ((main.RESTART_DEVICE_ID, 'RESTART'), (main.SLEEP_DEVICE_ID, 'SLEEP'), (main.APP_DEVICE_ID, 'LAUNCH'), (main.CHAT_DEVICE_ID, 'CHATGPT')):
             request = event()
             request['payload']['devices'][0]['id'] = device_id
             with patch('main.agent_command') as run:
@@ -302,7 +302,7 @@ class Tests(unittest.TestCase):
     @patch('main.authorize')
     def test_discovery_and_query_do_not_invent_power_state(self, auth):
         found = main.dispatch(event(kind='discovery'))['payload']['devices']
-        self.assertEqual([device['id'] for device in found], [main.DEVICE_ID, main.RESTART_DEVICE_ID, main.SLEEP_DEVICE_ID, main.APP_DEVICE_ID, 'wakemini-profile-work', 'wakemini-profile-game', 'wakemini-profile-cinema'])
+        self.assertEqual([device['id'] for device in found], [main.DEVICE_ID, main.RESTART_DEVICE_ID, main.SLEEP_DEVICE_ID, main.APP_DEVICE_ID, 'wakemini-profile-work', 'wakemini-profile-game', 'wakemini-profile-cinema', main.CHAT_DEVICE_ID])
         self.assertTrue(found[0]['capabilities'][0]['retrievable'])
         self.assertFalse(found[1]['capabilities'][0]['retrievable'])
         with patch('main.power_state', return_value=True):

@@ -134,6 +134,9 @@ internal static partial class Program
                 LastRequest = DateTime.Now;
                 string verb;
                 if (command == "TV_PC") verb = StartTv(baseDirectory);
+                else if (command == "CHATGPT") verb = StartConversation(baseDirectory);
+                else if (command == "CHAT_STATUS") verb = ConversationStatus();
+                else if (command == "CHAT_CANCEL") { CancelConversation(); verb = "CHAT_CANCEL_ACCEPTED"; }
                 else if (command == "TV_STATUS") verb = TvStatus();
                 else if (command == "TV_CANCEL") { CancelTv(); verb = "TV_CANCEL_ACCEPTED"; }
                 else if (command == "LAUNCH" || command.StartsWith("PROFILE_"))
@@ -180,6 +183,8 @@ internal static partial class Program
     {
         error = null;
         var settings = ReadSettings(baseDirectory);
+        if (settings.UseDesktopModes && profile is "work" or "game")
+            return StartDesktopMode(baseDirectory, profile, out error);
         var selected = profile is null ? null : settings.Profiles.GetValueOrDefault(profile);
         var path = (profile is null ? settings.LaunchPath : selected?.Path)?.Trim();
         if (string.IsNullOrEmpty(path) || !Path.IsPathFullyQualified(path) || !File.Exists(path)
@@ -223,7 +228,7 @@ internal static partial class Program
     private static bool IsNonce(string value) => value.Length == 32 && value.All(Uri.IsHexDigit);
 
     private static bool IsAllowedCommand(string command) =>
-        command is "TV_PC" or "TV_STATUS" or "TV_CANCEL" or "SHUTDOWN" or "RESTART" or "SLEEP" or "LAUNCH" or "PROFILE_WORK" or "PROFILE_GAME" or "PROFILE_CINEMA";
+        command is "CHATGPT" or "CHAT_STATUS" or "CHAT_CANCEL" or "TV_PC" or "TV_STATUS" or "TV_CANCEL" or "SHUTDOWN" or "RESTART" or "SLEEP" or "LAUNCH" or "PROFILE_WORK" or "PROFILE_GAME" or "PROFILE_CINEMA";
 
     private static string SignedReply(byte[] key, string verb, string nonce) =>
         $"WM1|{verb}|{nonce}|{Sign(key, $"{verb}|{nonce}")}";
@@ -314,6 +319,7 @@ internal static partial class Program
         public string? Host { get; set; }
         public string? Mac { get; set; }
         public Dictionary<string, LaunchProfile> Profiles { get; set; } = new();
+        public bool UseDesktopModes { get; set; }
     }
 
     private sealed class AgentTrayContext : ApplicationContext
@@ -337,6 +343,7 @@ internal static partial class Program
             menu.Items.Add(new ToolStripMenuItem("Телевизор LG OLED…", null, (_, _) => ConfigureTv(_baseDirectory)));
             menu.Items.Add(new ToolStripMenuItem("Состояние и диагностика…", null, (_, _) => ShowDiagnostics(_baseDirectory)));
             menu.Items.Add(new ToolStripMenuItem("Профили: Работа / Игры / Кино…", null, (_, _) => ConfigureProfiles(_baseDirectory)));
+            menu.Items.Add(new ToolStripMenuItem("Разговор с ChatGPT / FreeBuds…", null, (_, _) => ConfigureConversation(_baseDirectory)));
             menu.Items.Add(new ToolStripMenuItem("Отменить выключение / перезагрузку", null, (_, _) => CancelShutdown()));
             menu.Items.Add(new ToolStripMenuItem("Настроить приложение…", null, (_, _) => ConfigureApplication()));
             _launchNow = new ToolStripMenuItem("Запустить приложение сейчас", null, (_, _) => LaunchFromTray());

@@ -131,6 +131,27 @@ internal sealed class LgWebOsClient
         }
     }
 
+    internal async Task ReleaseBluetoothAudioAsync(CancellationToken token)
+    {
+        settings.Validate();
+        if (string.IsNullOrWhiteSpace(settings.ClientKey) || settings.Secure && string.IsNullOrWhiteSpace(settings.CertificateHash))
+            throw new InvalidOperationException("Сначала выполните сопряжение LG в настройках помощника.");
+        using var socket = NewSocket(false, out _);
+        await ConnectAsync(socket, token);
+        await RegisterAsync(socket, settings.ClientKey, token);
+        const string root = "com.webos.service.apiadapter/audio/";
+        var changed = await RequestAsync(socket, root + "changeSoundOutput", new { output = "tv_speaker" }, token);
+        if (!changed.TryGetProperty("returnValue", out var accepted) || accepted.ValueKind != JsonValueKind.True)
+            throw new InvalidOperationException("LG не принял переключение звука на динамики.");
+        for (var attempt = 0; attempt < 10; attempt++)
+        {
+            var state = await RequestAsync(socket, root + "getSoundOutput", new { }, token);
+            if (state.TryGetProperty("soundOutput", out var output) && output.GetString() == "tv_speaker") return;
+            await Task.Delay(300, token);
+        }
+        throw new IOException("LG принял запрос, но не подтвердил вывод на динамики. Подключение наушников к ПК не начато.");
+    }
+
     private ClientWebSocket NewSocket(bool pairing, out Func<string?> certificate)
     {
         string? observed = null;
@@ -159,8 +180,8 @@ internal sealed class LgWebOsClient
         var payload = new Dictionary<string, object?>
         {
             ["pairingType"] = "PROMPT", ["forcePairing"] = key == null,
-            ["manifest"] = new { manifestVersion = 1, appVersion = "1.4.1",
-                permissions = new[] { "CONTROL_INPUT_TV", "READ_INPUT_DEVICE_LIST", "LAUNCH" } }
+            ["manifest"] = new { manifestVersion = 1, appVersion = "1.5.0",
+                permissions = new[] { "CONTROL_INPUT_TV", "READ_INPUT_DEVICE_LIST", "LAUNCH", "CONTROL_AUDIO" } }
         };
         if (key != null) payload["client-key"] = key;
         await SendAsync(socket, new { id = "register", type = "register", payload }, token);

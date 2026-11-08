@@ -86,6 +86,15 @@ with tempfile.TemporaryDirectory() as temp:
                 assert client.recv(256) == signed(expected, token), command
                 client.send(request)
                 assert client.recv(256) == signed(expected, token), 'TV acknowledgement retry failed'
+            for command, expected in [('CHAT_STATUS', 'CHAT_STATUS_IDLE'), ('CHATGPT', 'CHATGPT_NOT_CONFIGURED'), ('CHAT_CANCEL', 'CHAT_CANCEL_ACCEPTED')]:
+                token = secrets.token_hex(16)
+                client.send(('WM1|PING|' + token).encode())
+                assert client.recv(256) == signed('ONLINE', token)
+                request = signed(command, token)
+                client.send(request)
+                assert client.recv(256) == signed(expected, token), command
+                client.send(request)
+                assert client.recv(256) == signed(expected, token), 'Chat acknowledgement retry failed'
         print('Real Windows agent: signed probe, duplicate acknowledgements, single execution and endpoint binding passed.')
     finally:
         process.terminate()

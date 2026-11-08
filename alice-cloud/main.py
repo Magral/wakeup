@@ -17,7 +17,9 @@ DEVICE_ID = 'wakemini-pc'
 RESTART_DEVICE_ID = 'wakemini-restart'
 SLEEP_DEVICE_ID = 'wakemini-sleep'
 APP_DEVICE_ID = 'wakemini-app'
+CHAT_DEVICE_ID = 'wakemini-chatgpt'
 COMMANDS = {
+    CHAT_DEVICE_ID: 'CHATGPT',
     RESTART_DEVICE_ID: 'RESTART',
     SLEEP_DEVICE_ID: 'SLEEP',
     APP_DEVICE_ID: 'LAUNCH',
@@ -147,7 +149,7 @@ def connect_agent(cfg, ip):
 
 
 def agent_command(cfg, command):
-    if command not in ('SHUTDOWN', 'RESTART', 'SLEEP', 'LAUNCH', 'PROFILE_WORK', 'PROFILE_GAME', 'PROFILE_CINEMA'):
+    if command not in ('SHUTDOWN', 'RESTART', 'SLEEP', 'LAUNCH', 'CHATGPT', 'PROFILE_WORK', 'PROFILE_GAME', 'PROFILE_CINEMA'):
         raise ValueError('Unsupported agent command')
     ip = socket.gethostbyname(cfg['PC_HOST'])
     sock, nonce = connect_agent(cfg, ip)
@@ -179,8 +181,10 @@ def agent_command(cfg, command):
             raise DeviceError('DEVICE_UNREACHABLE', 'Нет подтверждения. Команда могла выполниться; проверьте компьютер.')
         if validate_reply(reply, command + '_ACCEPTED', nonce, cfg['key']):
             return
-        if (command == 'LAUNCH' or command.startswith('PROFILE_')) and validate_reply(reply, command + '_NOT_CONFIGURED', nonce, cfg['key']):
-            raise DeviceError('INVALID_ACTION', 'Сначала выберите приложение в настройках Wake Mini на компьютере.')
+        if (command in ('LAUNCH', 'CHATGPT') or command.startswith('PROFILE_')) and validate_reply(reply, command + '_NOT_CONFIGURED', nonce, cfg['key']):
+            raise DeviceError('INVALID_ACTION', 'Сначала настройте соответствующее действие в Wake Mini на компьютере.')
+        if command == 'CHATGPT' and validate_reply(reply, 'CHATGPT_BUSY', nonce, cfg['key']):
+            raise DeviceError('INVALID_ACTION', 'Подготовка разговора или управление телевизором уже выполняется.')
         if (command == 'LAUNCH' or command.startswith('PROFILE_')) and validate_reply(reply, command + '_FAILED', nonce, cfg['key']):
             raise DeviceError('INTERNAL_ERROR', 'Windows не удалось запустить выбранное приложение.')
         raise DeviceError('INTERNAL_ERROR', 'Подтверждение команды не прошло проверку.')
@@ -209,7 +213,7 @@ def dispatch(event):
     LOG.info('smart_home type=%s request_id=%s', str(kind)[:20], json.dumps(request_id))
     answer = {'request_id': request_id}
     if kind == 'discovery':
-        info = {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.3.0'}
+        info = {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.5.0'}
         answer['payload'] = {'user_id': user_id, 'devices': [
             {'id': DEVICE_ID, 'name': 'Компьютер', 'type': 'devices.types.other',
              'description': 'Включение, выключение и проверка связи с Windows',
@@ -234,6 +238,11 @@ def dispatch(event):
                 'description': 'Запуск локального профиля Windows',
                 'capabilities': [{'type': CAPABILITY, 'retrievable': False, 'reportable': False}],
                 'device_info': info})
+        answer['payload']['devices'].append({
+            'id': CHAT_DEVICE_ID, 'name': 'Разговор с ChatGPT', 'type': 'devices.types.other',
+            'description': 'Подготовка LG, наушников и Chrome. Ход выполнения — в помощнике Windows; запуск голоса на странице вручную.',
+            'capabilities': [{'type': CAPABILITY, 'retrievable': False, 'reportable': False}],
+            'device_info': info})
         return answer
     if kind == 'unlink':
         return answer
