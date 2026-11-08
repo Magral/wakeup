@@ -10,6 +10,7 @@ import secrets
 import socket
 import time
 from urllib.request import Request, urlopen
+from urllib.error import HTTPError, URLError
 
 CAPABILITY = 'devices.capabilities.on_off'
 DEVICE_ID = 'wakemini-pc'
@@ -66,11 +67,26 @@ def authorize(header, cfg):
 
     request = Request('https://login.yandex.ru/info?format=json',
                       headers={'Authorization': 'OAuth ' + token})
-    try:
-        with urlopen(request, timeout=1.0) as response:
-            user = json.load(response)
-    except Exception:
-        raise PermissionError('Authorization unavailable') from None
+    # Retry only the read-only identity lookup, within the previous one-second
+    # network budget. Never retry invalid credentials or use an expired cache.
+    deadline = time.monotonic() + 1.0
+    for attempt in range(2):
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise PermissionError('Authorization unavailable')
+        try:
+            with urlopen(request, timeout=min(0.6, remaining)) as response:
+                user = json.load(response)
+            break
+        except HTTPError as exc:
+            retryable = exc.code in (429, 500, 502, 503, 504)
+        except (URLError, TimeoutError, ConnectionError):
+            retryable = True
+        except Exception:
+            raise PermissionError('Authorization unavailable') from None
+        LOG.warning('identity_lookup_failed attempt=%s retryable=%s', attempt + 1, retryable)
+        if not retryable or attempt == 1:
+            raise PermissionError('Authorization unavailable') from None
     if str(user.get('login', '')).casefold() != cfg['YANDEX_LOGIN'].casefold() or user.get('client_id') != cfg['OAUTH_CLIENT_ID']:
         raise PermissionError('Account not allowed')
     user_id = str(user['id'])
@@ -107,7 +123,8 @@ def power_on(cfg):
 
 def connect_agent(cfg, ip):
     # A short retry for the idempotent PING absorbs a lost first UDP packet.
-    # Each attempt uses its own nonce and socket. Commands themselves are never retried.
+    # Each attempt uses its own nonce and socket. Command ACK recovery below
+    # reuses identical bytes and endpoint, as required by the helper's ledger.
     for _ in range(2):
         nonce = secrets.token_hex(16)
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -141,8 +158,20 @@ def agent_command(cfg, command):
         reply = None
         for attempt in range(2):
             sock.send(packet.encode('ascii'))
+            deadline = time.monotonic() + 0.35
             try:
-                reply = sock.recv(256)
+                while True:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise socket.timeout()
+                    sock.settimeout(remaining)
+                    candidate = sock.recv(256)
+                    # UDP can duplicate/delay the probe response. It is not a
+                    # command ACK, but must not hide the real ACK behind it.
+                    if validate_reply(candidate, 'ONLINE', nonce, cfg['key']):
+                        continue
+                    reply = candidate
+                    break
                 break
             except (socket.timeout, ConnectionRefusedError):
                 LOG.warning('agent_ack_timeout command=%s attempt=%s', command, attempt + 1)
