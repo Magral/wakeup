@@ -38,6 +38,19 @@ with tempfile.TemporaryDirectory() as temp:
                 time.sleep(0.1)
             else: raise AssertionError('Agent did not answer a signed probe')
             packet = signed('PROFILE_WORK', nonce)
+            # A replay arriving from another source must neither execute nor
+            # consume the original sender's pending challenge.
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as stranger:
+                stranger.connect(('127.0.0.1', 3000)); stranger.settimeout(0.2)
+                stranger.send(packet)
+                try:
+                    stranger.recv(256)
+                    raise AssertionError('Command accepted from a different endpoint')
+                except socket.timeout: pass
+            # Malformed and oversized packets must not disturb a valid session.
+            client.send(b'WM1|junk')
+            client.send(b'x' * 1024)
+            client.send(signed('PROFILE_WORK', nonce)[:-1] + b'z')
             client.send(packet)
             # Simulate a sender recovering a missing acknowledgement by sending identical bytes.
             client.send(packet)

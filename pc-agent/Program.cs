@@ -96,11 +96,15 @@ internal static partial class Program
     {
         try
         {
+            // WM1 packets are tiny. Ignore unrelated traffic before decoding it.
+            if (datagram.Buffer.Length > 256) return;
             var text = Encoding.UTF8.GetString(datagram.Buffer);
             var fields = text.Split('|');
             if (fields.Length == 3 && fields[0] == "WM1" && fields[1] == "PING" && IsNonce(fields[2]))
             {
                 PruneChallenges();
+                // Probes are unauthenticated; bound their retained state.
+                if (Challenges.Count >= 4096) return;
                 var expiry = DateTimeOffset.UtcNow.AddSeconds(15).ToUnixTimeMilliseconds();
                 if (!Challenges.TryAdd(fields[2], new Challenge(expiry, datagram.RemoteEndPoint))) return;
                 var response = $"WM1|ONLINE|{fields[2]}|{Sign(key, $"ONLINE|{fields[2]}")}";
@@ -121,9 +125,12 @@ internal static partial class Program
                     await SendAsync(udp, previous, datagram.RemoteEndPoint);
                     return;
                 }
-                if (!Challenges.TryRemove(nonce, out var challenge)
+                if (!Challenges.TryGetValue(nonce, out var challenge)
                     || DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() > challenge.ExpiresAt
                     || !challenge.RemoteEndPoint.Equals(datagram.RemoteEndPoint)) return;
+                // An otherwise signed packet from a different endpoint must
+                // not consume the legitimate sender's one-use challenge.
+                if (!Challenges.TryRemove(nonce, out _)) return;
                 LastRequest = DateTime.Now;
                 string verb;
                 if (command == "TV_PC") verb = StartTv(baseDirectory);
