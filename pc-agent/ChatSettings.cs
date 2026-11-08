@@ -38,7 +38,7 @@ internal static partial class Program
     {
         lock (TvLock)
         {
-            if (ChatOperation != null || TvOperation != null) return "CHATGPT_BUSY";
+            if (ChatOperation != null || TvOperation != null || Volatile.Read(ref DesktopBusy) != 0) return "CHATGPT_BUSY";
             ConversationSettings settings;
             LgTvSettings tv;
             try

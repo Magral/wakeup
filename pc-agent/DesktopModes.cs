@@ -51,8 +51,11 @@ internal static partial class Program
         if (!Path.IsPathFullyQualified(path) || !File.Exists(path)
             || !string.Equals(Path.GetFileName(path), expected, StringComparison.OrdinalIgnoreCase))
         { error = "not_configured"; return false; }
-        if (Interlocked.CompareExchange(ref DesktopBusy, 1, 0) != 0)
-        { error = "busy"; return false; }
+        lock (TvLock)
+        {
+            if (ChatOperation != null || Interlocked.CompareExchange(ref DesktopBusy, 1, 0) != 0)
+            { error = "busy"; return false; }
+        }
         DesktopMessage = "Запрос переключения принят…";
         _ = Task.Run(async () =>
         {
