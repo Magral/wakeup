@@ -28,7 +28,12 @@ with tempfile.TemporaryDirectory() as temp:
     try:
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
             client.connect(('127.0.0.1', 3000)); client.settimeout(0.5)
-            for _ in range(30):
+            # A hosted Windows runner can take several seconds to start WinForms
+            # and load .NET. Keep startup tolerance separate from UDP ACK timing.
+            startup_deadline = time.monotonic() + 25
+            while time.monotonic() < startup_deadline:
+                if process.poll() is not None:
+                    raise AssertionError('Agent exited during startup: ' + str(process.returncode))
                 nonce = secrets.token_hex(16)
                 client.send(('WM1|PING|' + nonce).encode())
                 try:
@@ -36,7 +41,10 @@ with tempfile.TemporaryDirectory() as temp:
                     if reply == signed('ONLINE', nonce): break
                 except (socket.timeout, ConnectionRefusedError, ConnectionResetError): pass
                 time.sleep(0.1)
-            else: raise AssertionError('Agent did not answer a signed probe')
+            else:
+                log = agent.parent / 'WakeMiniAgent.log'
+                detail = log.read_text(errors='replace')[-2000:] if log.exists() else 'No agent log created'
+                raise AssertionError('Agent did not answer a signed probe within 25 seconds. ' + detail)
             packet = signed('PROFILE_WORK', nonce)
             # A replay arriving from another source must neither execute nor
             # consume the original sender's pending challenge.
