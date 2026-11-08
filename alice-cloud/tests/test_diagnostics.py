@@ -1,10 +1,32 @@
 import json
+import socket
 import unittest
 from unittest.mock import patch, MagicMock
 from test_main import ENV, event
 import main
 
 class Diagnostics(unittest.TestCase):
+    def test_command_network_errors_identify_stage_without_private_details(self):
+        cfg = {'PC_HOST': 'private-host', 'port': 3000, 'key': b'x' * 32}
+        for failure, marker in [(socket.gaierror('private DNS'), 'DNS')]:
+            with patch('main.socket.gethostbyname', side_effect=failure):
+                with self.assertRaises(main.DeviceError) as caught:
+                    main.agent_command(cfg, 'PROFILE_WORK')
+                self.assertIn('WM154 ' + marker + ':', caught.exception.message)
+                self.assertNotIn('private', caught.exception.message)
+        with patch('main.socket.gethostbyname', return_value='127.0.0.1'), patch('main.connect_agent', side_effect=OSError('private socket')):
+            with self.assertRaises(main.DeviceError) as caught:
+                main.agent_command(cfg, 'PROFILE_WORK')
+            self.assertIn('WM154 PING_IO:', caught.exception.message)
+            self.assertNotIn('private', caught.exception.message)
+        for method, marker in [('send', 'SEND'), ('recv', 'ACK_IO')]:
+            sock = MagicMock()
+            getattr(sock, method).side_effect = OSError('private socket')
+            with patch('main.socket.gethostbyname', return_value='127.0.0.1'), patch('main.connect_agent', return_value=(sock, 'nonce')):
+                with self.assertRaises(main.DeviceError) as caught:
+                    main.agent_command(cfg, 'PROFILE_WORK')
+                self.assertIn('WM154 ' + marker + ':', caught.exception.message)
+                self.assertNotIn('private', caught.exception.message)
     def setUp(self):
         self.env = patch.dict(main.os.environ, ENV, clear=True); self.env.start(); self.addCleanup(self.env.stop)
         main._AUTH_CACHE.clear()
