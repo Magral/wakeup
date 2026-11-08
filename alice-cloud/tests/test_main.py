@@ -170,7 +170,7 @@ class Tests(unittest.TestCase):
 
     @patch('main.authorize')
     def test_dns_failure_is_reported_without_success(self, auth):
-        with patch('main.socket.gethostbyname', side_effect=socket.gaierror()), patch('main.socket.socket') as udp:
+        with patch('main.resolve_pc', side_effect=socket.gaierror()), patch('main.socket.socket') as udp:
             result = main.dispatch(event(True))
             udp.assert_not_called()
             self.assertEqual(result['payload']['devices'][0]['capabilities'][0]['state']['action_result']['error_code'], 'DEVICE_UNREACHABLE')
