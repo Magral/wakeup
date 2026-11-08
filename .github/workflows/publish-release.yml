@@ -54,6 +54,20 @@ jobs:
           dotnet run --project tests/tv/TvTests.csproj
       - name: Build Android release
         run: gradle assembleRelease
+      - name: Verify permanent Android signing certificate
+        if: steps.signing.outputs.signed == 'true'
+        run: |
+          "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --print-certs app/build/outputs/apk/release/app-release.apk > "$RUNNER_TEMP/wakemini-certificate.txt"
+          python - <<'PY'
+          import os, re
+          from pathlib import Path
+          expected = Path('docs/android-signing-certificate.sha256').read_text().strip().replace(':', '').lower()
+          report = (Path(os.environ['RUNNER_TEMP']) / 'wakemini-certificate.txt').read_text()
+          match = re.search(r'Signer #1 certificate SHA-256 digest: ([a-fA-F0-9]+)', report)
+          if not match or match.group(1).lower() != expected:
+              raise SystemExit('APK signed with an unexpected certificate. Use the permanent Wake Mini keystore.')
+          print('Permanent Wake Mini release certificate verified.')
+          PY
       - name: Build Windows helper
         run: dotnet publish pc-agent/WakeMiniAgent.csproj --configuration Release --runtime win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true --output publish/win-x64
       - name: Stage release assets
