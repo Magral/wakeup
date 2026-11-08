@@ -3,6 +3,8 @@ from collections import deque
 from contextvars import ContextVar
 from functools import wraps
 import threading
+import ipaddress
+import queue
 import base64
 import hashlib
 import hmac
@@ -15,6 +17,7 @@ import socket
 import time
 from urllib.request import Request, urlopen
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlencode
 
 CAPABILITY = 'devices.capabilities.on_off'
 DEVICE_ID = 'wakemini-pc'
@@ -34,6 +37,94 @@ COMMANDS = {
 LOG = logging.getLogger(__name__)
 _AUTH_CACHE = {}
 _AUTH_CACHE_TTL_SECONDS = 20
+_DNS_CACHE = {}
+_DNS_LOCK = threading.Lock()
+_DNS_SLOTS = threading.BoundedSemaphore(6)
+_DNS_BUDGET = 0.65
+
+
+def _dns_https(host, endpoint):
+    request = Request(endpoint + '?' + urlencode({'name': host, 'type': 'A'}),
+                      headers={'Accept': 'application/dns-json'})
+    with urlopen(request, timeout=0.5) as response:
+        raw = response.read(16385)
+    if len(raw) > 16384:
+        raise ValueError('DNS response too large')
+    data = json.loads(raw)
+    if data.get('Status') != 0 or data.get('TC'):
+        raise ValueError('DNS response unsuccessful')
+    answers = data.get('Answer', [])
+    for record in answers:
+        if record.get('type') == 1:
+            address = ipaddress.IPv4Address(record['data'])
+            if not address.is_global:
+                continue
+            # Respect CNAME TTL too, never retain a DDNS address beyond 30s.
+            ttl = max(0, min(30, *(int(item.get('TTL', 0)) for item in answers)))
+            return str(address), ttl
+    raise ValueError('No public IPv4 address')
+
+
+def resolve_pc(host):
+    try:
+        return str(ipaddress.IPv4Address(host))
+    except ipaddress.AddressValueError:
+        pass
+    # Configured host only. Never forward the connection key or OAuth token.
+    if not re.fullmatch(r'(?=.{1,253}$)[A-Za-z0-9](?:[A-Za-z0-9.-]*[A-Za-z0-9])?\.?', host):
+        raise DeviceError('DEVICE_UNREACHABLE', 'WM155 DNS_CONFIG: неверный формат PC_HOST.')
+    host = host.lower().rstrip('.')
+    with _DNS_LOCK:
+        cached = _DNS_CACHE.get(host)
+        if cached and cached[0] > time.monotonic():
+            return cached[1]
+        _DNS_CACHE.pop(host, None)
+    results = queue.Queue()
+    deadline = time.monotonic() + _DNS_BUDGET
+
+    def launch(function):
+        if not _DNS_SLOTS.acquire(blocking=False):
+            return False
+        def run():
+            try:
+                results.put(('ok', function()))
+            except Exception:
+                results.put(('failed', None))
+            finally:
+                _DNS_SLOTS.release()
+        threading.Thread(target=run, daemon=True).start()
+        return True
+
+    pending = int(launch(lambda: (str(ipaddress.IPv4Address(socket.gethostbyname(host))), 0)))
+    # Give normal DNS 80ms; a stalled resolver must not block the command.
+    if pending:
+        try:
+            status, result = results.get(timeout=0.08)
+            pending -= 1
+            if status == 'ok':
+                return result[0]
+        except queue.Empty:
+            pass
+    for endpoint in ('https://dns.google/resolve', 'https://cloudflare-dns.com/dns-query'):
+        pending += int(launch(lambda endpoint=endpoint: _dns_https(host, endpoint)))
+    while pending:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            status, result = results.get(timeout=remaining)
+        except queue.Empty:
+            break
+        pending -= 1
+        if status == 'ok':
+            address, ttl = result
+            if ttl > 0:
+                with _DNS_LOCK:
+                    _DNS_CACHE[host] = (time.monotonic() + ttl, address)
+                    while len(_DNS_CACHE) > 32:
+                        _DNS_CACHE.pop(next(iter(_DNS_CACHE)))
+            return address
+    raise DeviceError('DEVICE_UNREACHABLE', 'WM155 DNS: основной и резервные DNS не определили адрес ПК.')
 
 
 class IdentityUnavailable(PermissionError):
@@ -127,7 +218,7 @@ def validate_reply(packet, verb, nonce, key):
 def power_on(cfg):
     packet = bytes([255]) * 6 + cfg['mac'] * 16
     # Resolve once, never accept a caller-supplied host or MAC.
-    ip = socket.gethostbyname(cfg['PC_HOST'])
+    ip = resolve_pc(cfg['PC_HOST'])
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
         for _ in range(3):
             sock.sendto(packet, (ip, cfg['port']))
@@ -162,15 +253,15 @@ def agent_command(cfg, command):
     if command not in ('SHUTDOWN', 'RESTART', 'SLEEP', 'LAUNCH', 'CHATGPT', 'CHAT_END', 'PROFILE_WORK', 'PROFILE_GAME', 'PROFILE_CINEMA'):
         raise ValueError('Unsupported agent command')
     try:
-        ip = socket.gethostbyname(cfg['PC_HOST'])
+        ip = resolve_pc(cfg['PC_HOST'])
     except OSError:
-        raise DeviceError('DEVICE_UNREACHABLE', 'WM154 DNS: не удалось определить адрес ПК.') from None
+        raise DeviceError('DEVICE_UNREACHABLE', 'WM155 DNS: не удалось определить адрес ПК.') from None
     try:
         sock, nonce = connect_agent(cfg, ip)
     except DeviceError as exc:
-        raise DeviceError(exc.code, 'WM154 PING: ' + exc.message) from None
+        raise DeviceError(exc.code, 'WM155 PING: ' + exc.message) from None
     except OSError:
-        raise DeviceError('DEVICE_UNREACHABLE', 'WM154 PING_IO: сетевая ошибка при проверке помощника.') from None
+        raise DeviceError('DEVICE_UNREACHABLE', 'WM155 PING_IO: сетевая ошибка при проверке помощника.') from None
     with sock:
         sock.settimeout(0.35)
         message = command + '|' + nonce
@@ -180,7 +271,7 @@ def agent_command(cfg, command):
             try:
                 sock.send(packet.encode('ascii'))
             except OSError:
-                raise DeviceError('DEVICE_UNREACHABLE', 'WM154 SEND: не удалось отправить команду ПК.') from None
+                raise DeviceError('DEVICE_UNREACHABLE', 'WM155 SEND: не удалось отправить команду ПК.') from None
             deadline = time.monotonic() + 0.35
             try:
                 while True:
@@ -199,9 +290,9 @@ def agent_command(cfg, command):
             except (socket.timeout, ConnectionRefusedError):
                 LOG.warning('agent_ack_timeout command=%s attempt=%s', command, attempt + 1)
             except OSError:
-                raise DeviceError('DEVICE_UNREACHABLE', 'WM154 ACK_IO: сетевая ошибка при ожидании подтверждения.') from None
+                raise DeviceError('DEVICE_UNREACHABLE', 'WM155 ACK_IO: сетевая ошибка при ожидании подтверждения.') from None
         if reply is None:
-            raise DeviceError('DEVICE_UNREACHABLE', 'WM154 ACK_TIMEOUT: ПК ответил на PING, но не подтвердил команду. Она могла выполниться.')
+            raise DeviceError('DEVICE_UNREACHABLE', 'WM155 ACK_TIMEOUT: ПК ответил на PING, но не подтвердил команду. Она могла выполниться.')
         if validate_reply(reply, command + '_ACCEPTED', nonce, cfg['key']):
             return
         if (command in ('LAUNCH', 'CHATGPT', 'CHAT_END') or command.startswith('PROFILE_')) and validate_reply(reply, command + '_NOT_CONFIGURED', nonce, cfg['key']):
@@ -220,7 +311,7 @@ def power_off(cfg):
 def power_state(cfg):
     # The signed challenge response confirms the helper is awake. The query
     # handler reports no response as "off" so Alice keeps the wake command usable.
-    ip = socket.gethostbyname(cfg['PC_HOST'])
+    ip = resolve_pc(cfg['PC_HOST'])
     sock, _ = connect_agent(cfg, ip)
     sock.close()
     return True
@@ -236,7 +327,7 @@ def dispatch(event):
     LOG.info('smart_home type=%s request_id=%s', str(kind)[:20], json.dumps(request_id))
     answer = {'request_id': request_id}
     if kind == 'discovery':
-        info = {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.5.4'}
+        info = {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.5.5'}
         answer['payload'] = {'user_id': user_id, 'devices': [
             {'id': DEVICE_ID, 'name': 'Компьютер', 'type': 'devices.types.other',
              'description': 'Включение, выключение и проверка связи с Windows',
@@ -327,7 +418,7 @@ def dispatch(event):
                 action_result = {'status': 'ERROR', 'error_code': exc.code, 'error_message': exc.message}
             except OSError:
                 action_result = {'status': 'ERROR', 'error_code': 'DEVICE_UNREACHABLE',
-                                 'error_message': 'WM154 WAKE_IO: сетевая ошибка при отправке пакета включения.'}
+                                 'error_message': 'WM155 WAKE_IO: сетевая ошибка при отправке пакета включения.'}
             result['capabilities'] = [{'type': CAPABILITY, 'state': {'instance': 'on', 'action_result': action_result}}]
     answer['payload'] = {'devices': [result]}
     return answer
@@ -409,7 +500,7 @@ def _diagnostic(event):
     started = time.perf_counter()
     try:
         cfg = settings()
-        ip = socket.gethostbyname(cfg['PC_HOST'])
+        ip = resolve_pc(cfg['PC_HOST'])
         trace.append({'stage': 'dns', 'result': 'ok', 'ms': round((time.perf_counter() - started) * 1000)})
         sock, _ = connect_agent(cfg, ip)
         sock.close()
@@ -419,7 +510,7 @@ def _diagnostic(event):
     finally:
         _TRACE.reset(marker)
     with _RECENT_LOCK: recent = list(_RECENT)
-    body = {'version': '1.5.4', 'probe': result, 'elapsed_ms': round((time.perf_counter() - started) * 1000),
+    body = {'version': '1.5.5', 'probe': result, 'elapsed_ms': round((time.perf_counter() - started) * 1000),
             'stages': trace, 'recent_instance_requests': recent,
             'note': 'Read-only signed probe. No power or app commands. History is instance-local and may be empty.'}
     return {'statusCode': 200, 'headers': {'Content-Type': 'application/json', 'Cache-Control': 'no-store'},
