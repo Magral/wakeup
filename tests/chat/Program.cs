@@ -44,7 +44,7 @@ Console.WriteLine("Chat setup checks passed: failures stop later actions, cancel
 foreach (var bytes in new[] { new byte[] { 1, 0 }, BitConverter.GetBytes(VoiceFrames.Maximum + 1) })
 {
     try { await VoiceFrames.ReadAsync(new MemoryStream(bytes), CancellationToken.None); throw new Exception("Invalid native frame accepted"); }
-    catch (IOException) { }
+    catch (Exception ex) when (ex is IOException or InvalidDataException) { }
 }
 Assert(await VoiceFrames.ReadAsync(new MemoryStream(), CancellationToken.None) is null, "Clean EOF not handled");
 using (var stream = new MemoryStream())

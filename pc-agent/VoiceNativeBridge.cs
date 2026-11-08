@@ -58,7 +58,7 @@ internal sealed class VoiceNativeBridge
                 }
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
-            catch (Exception ex) when (ex is IOException or JsonException or InvalidOperationException) { }
+            catch (Exception ex) when (ex is IOException or InvalidDataException or JsonException or InvalidOperationException) { }
             finally
             {
                 lock (gate) connection = null;
