@@ -2,7 +2,7 @@ const HOST = 'ru.wakemini.voice';
 let port = null, busy = false;
 let knownTab = null;
 let voiceSessionId = null;
-const restored = chrome.storage.session.get('knownTab').then(saved => { knownTab = saved.knownTab ?? null; });
+const restored = chrome.storage.session.get(['knownTab', 'voiceSessionId']).then(saved => { knownTab = saved.knownTab ?? null; voiceSessionId = saved.voiceSessionId ?? null; });
 async function remember(id) { knownTab = id; await chrome.storage.session.set({knownTab: id}); return id; }
 const done = new Map();
 const cancelled = new Set();
@@ -36,7 +36,7 @@ async function handle(message) {
   if (done.has(message.id)) { port?.postMessage(done.get(message.id)); return; }
   if (busy) { port?.postMessage({id: message.id, ok: false, code: 'VOICE_OPERATION_BUSY'}); return; }
   busy = true;
-  if (message.action === 'start') voiceSessionId = message.id;
+  if (message.action === 'start') { await restored; voiceSessionId = message.id; await chrome.storage.session.set({voiceSessionId}); }
   const expires = Date.now() + 35000;
   let result;
   try {
@@ -81,15 +81,19 @@ chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
 connect();
 
-chrome.runtime.onMessage.addListener((message, sender) => {
+chrome.runtime.onMessage.addListener(async (message, sender) => {
+  await restored;
   if (sender.id !== chrome.runtime.id || sender.tab?.id !== knownTab ||
       !sender.url?.startsWith('https://chatgpt.com/') || message?.type !== 'wakemini_voice_ended' ||
       message.sessionId !== voiceSessionId || !voiceSessionId) return;
   const sessionId = voiceSessionId; voiceSessionId = null;
+  await chrome.storage.session.set({voiceSessionId: null});
   port?.postMessage({event: 'voice_ended', sessionId});
 });
-chrome.tabs.onRemoved.addListener(tabId => {
+chrome.tabs.onRemoved.addListener(async tabId => {
+  await restored;
   if (tabId !== knownTab || !voiceSessionId) return;
   const sessionId = voiceSessionId; voiceSessionId = null;
+  await chrome.storage.session.set({voiceSessionId: null});
   port?.postMessage({event: 'voice_ended', sessionId});
 });
