@@ -311,7 +311,7 @@ class Tests(unittest.TestCase):
     @patch('main.authorize')
     def test_discovery_and_query_do_not_invent_power_state(self, auth):
         found = main.dispatch(event(kind='discovery'))['payload']['devices']
-        self.assertEqual([device['id'] for device in found], [main.DEVICE_ID, main.RESTART_DEVICE_ID, main.SLEEP_DEVICE_ID, main.APP_DEVICE_ID, 'wakemini-profile-work', 'wakemini-profile-game', 'wakemini-profile-cinema', main.CHAT_DEVICE_ID])
+        self.assertEqual([device['id'] for device in found], [main.DEVICE_ID, main.RESTART_DEVICE_ID, main.SLEEP_DEVICE_ID, main.APP_DEVICE_ID, 'wakemini-profile-work', 'wakemini-profile-game', main.CHAT_DEVICE_ID])
         self.assertTrue(found[0]['capabilities'][0]['retrievable'])
         self.assertFalse(found[1]['capabilities'][0]['retrievable'])
         with patch('main.power_state', return_value=True):
