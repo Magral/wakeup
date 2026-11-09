@@ -14,6 +14,7 @@ internal static partial class Program
         public bool Enabled { get; set; }
         public string ChromePath { get; set; } = "";
         public string OutputId { get; set; } = "";
+        public string TvOutputId { get; set; } = "";
         public string MicrophoneId { get; set; } = "";
         public bool BackgroundVoice { get; set; }
     }
@@ -206,6 +207,11 @@ internal static partial class Program
             return combo;
         }
         var output = Select("Звук — выберите FreeBuds SE 2", false, settings.OutputId);
+        Row(grid, new Label { Text = "Звук телевизора — выберите LG / HDMI / NVIDIA High Definition Audio", AutoSize = true });
+        var tvOutput = Row(grid, new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList });
+        foreach (var device in devices.Where(x => !x.Microphone)) tvOutput.Items.Add(device);
+        tvOutput.SelectedItem = devices.FirstOrDefault(x => x.Id == settings.TvOutputId && !x.Microphone);
+        var returnTv = Row(grid, new Button { Text = "Вернуть звук на телевизор", AutoSize = true });
         var input = Select("Микрофон — выберите микрофон FreeBuds SE 2", true, settings.MicrophoneId);
         Row(grid, new Label { AutoSize = true, MaximumSize = new(700, 0), Text =
             "Если устройства нет в списке, подключите наушники к Windows и откройте это окно заново. " +
@@ -225,11 +231,12 @@ internal static partial class Program
                 if (output.SelectedItem is not ChatAudioEndpoint o || input.SelectedItem is not ChatAudioEndpoint i)
                     throw new InvalidOperationException("Выберите наушники и микрофон.");
                 settings = new() { Enabled = enabled.Checked, ChromePath = chrome.Text.Trim(), OutputId = o.Id, MicrophoneId = i.Id,
-                    BackgroundVoice = background.Checked };
+                    BackgroundVoice = background.Checked, TvOutputId = (tvOutput.SelectedItem as ChatAudioEndpoint)?.Id ?? "" };
                 SaveChatSettings(directory, settings); return true;
             }
             catch (Exception ex) { status.Text = ex.Message; return false; }
         }
+        returnTv.Click += (_, _) => { if (Persist()) status.Text = ReturnSoundToTv(directory); };
         save.Click += (_, _) => { if (Persist()) status.Text = "Настройки сохранены."; };
         void Start(bool tvOnly)
         {

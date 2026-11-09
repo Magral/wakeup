@@ -6,7 +6,7 @@ internal sealed record ChatAudioEndpoint(string Id, string Name, bool Microphone
     public override string ToString() => Name + (Active ? " — подключено" : " — отключено");
 }
 
-internal static class ChatAudio
+internal static partial class ChatAudio
 {
     private static IMMDeviceEnumerator Enumerator() => (IMMDeviceEnumerator)Activator.CreateInstance(
         Type.GetTypeFromCLSID(ComIds.MMDeviceEnumeratorClsid, true)!)!;

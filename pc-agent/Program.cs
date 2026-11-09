@@ -42,6 +42,17 @@ internal static partial class Program
 
         using var stop = new CancellationTokenSource();
         var serverTask = RunServerAsync(baseDirectory, key, stop.Token);
+        VoiceBridge.ConversationEnded += () => _ = Task.Run(async () =>
+        {
+            for (var attempt = 0; attempt < 20; attempt++)
+            {
+                await Task.Delay(500);
+                if (VoiceBridge.HasVoiceSession) return;
+                var result = ReturnSoundToTv(baseDirectory);
+                if (result == "SOUND_TV_BUSY") continue;
+                Log(baseDirectory, "Автовозврат звука: " + result); return;
+            }
+        });
         var voiceBridgeTask = VoiceBridge.RunServerAsync(stop.Token);
         using var tray = new AgentTrayContext(baseDirectory);
         Application.Run(tray);
@@ -146,6 +157,7 @@ internal static partial class Program
                 LastRequest = DateTime.Now;
                 string verb;
                 if (command == "TV_PC") verb = StartTv(baseDirectory);
+                else if (command == "SOUND_TV") verb = ReturnSoundToTv(baseDirectory);
                 else if (command == "CHATGPT") verb = StartConversation(baseDirectory);
                 else if (command == "CHAT_END") verb = StopBackgroundConversation(baseDirectory);
                 else if (command == "CHAT_STATUS") verb = ConversationStatus();
@@ -253,7 +265,7 @@ internal static partial class Program
     private static bool IsNonce(string value) => value.Length == 32 && value.All(Uri.IsHexDigit);
 
     private static bool IsAllowedCommand(string command) =>
-        command is "CHATGPT" or "CHAT_END" or "CHAT_STATUS" or "CHAT_CANCEL" or "TV_PC" or "TV_STATUS" or "TV_CANCEL" or "SHUTDOWN" or "RESTART" or "SLEEP" or "LAUNCH" or "PROFILE_WORK" or "PROFILE_GAME";
+        command is "SOUND_TV" or "CHATGPT" or "CHAT_END" or "CHAT_STATUS" or "CHAT_CANCEL" or "TV_PC" or "TV_STATUS" or "TV_CANCEL" or "SHUTDOWN" or "RESTART" or "SLEEP" or "LAUNCH" or "PROFILE_WORK" or "PROFILE_GAME";
 
     private static string SignedReply(byte[] key, string verb, string nonce) =>
         $"WM1|{verb}|{nonce}|{Sign(key, $"{verb}|{nonce}")}";
@@ -367,8 +379,9 @@ internal static partial class Program
             menu.Items.Add(new ToolStripMenuItem("Подключить телефон / QR…", null, (_, _) => ConfigurePhone(_baseDirectory)));
             menu.Items.Add(new ToolStripMenuItem("Телевизор LG OLED…", null, (_, _) => ConfigureTv(_baseDirectory)));
             menu.Items.Add(new ToolStripMenuItem("Состояние и диагностика…", null, (_, _) => ShowDiagnostics(_baseDirectory)));
-            menu.Items.Add(new ToolStripMenuItem("Профили: Работа / Игры / Кино…", null, (_, _) => ConfigureProfiles(_baseDirectory)));
+            menu.Items.Add(new ToolStripMenuItem("Профили: Работа / Игры…", null, (_, _) => ConfigureProfiles(_baseDirectory)));
             menu.Items.Add(new ToolStripMenuItem("Разговор с ChatGPT / FreeBuds…", null, (_, _) => ConfigureConversation(_baseDirectory)));
+            menu.Items.Add(new ToolStripMenuItem("Вернуть звук на телевизор", null, (_, _) => MessageBox.Show(ReturnSoundToTv(_baseDirectory), "Wake Mini")));
             menu.Items.Add(new ToolStripMenuItem("Отменить выключение / перезагрузку", null, (_, _) => CancelShutdown()));
             menu.Items.Add(new ToolStripMenuItem("Настроить приложение…", null, (_, _) => ConfigureApplication()));
             _launchNow = new ToolStripMenuItem("Запустить приложение сейчас", null, (_, _) => LaunchFromTray());
@@ -381,6 +394,8 @@ internal static partial class Program
             menu.Items.Add(_autoLaunch);
             menu.Items.Add(new ToolStripSeparator());
             menu.Items.Add(new ToolStripMenuItem("Открыть папку Wake Mini", null, (_, _) => OpenFolder()));
+            menu.Items.Add(new ToolStripMenuItem("Проверить обновления…", null, async (_, _) => await UpdateAgentAsync(_baseDirectory, ExitThread)));
+            menu.Items.Add(new ToolStripMenuItem("Вернуть предыдущую версию…", null, (_, _) => RollbackAgent(_baseDirectory, ExitThread)));
             menu.Items.Add(new ToolStripMenuItem("Выход", null, (_, _) => ExitThread()));
 
             _tray = new NotifyIcon
