@@ -5,10 +5,15 @@ internal static partial class Program
 {
     private static int DesktopBusy;
     private static string DesktopMessage = "Переключение Работа / Игры ещё не запускалось.";
+    private delegate bool EnumWindowsProc(IntPtr window, IntPtr lParam);
+
     [DllImport("user32.dll")] private static extern bool ShowWindowAsync(IntPtr window, int command);
     [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr window);
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
     [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr window);
+    [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr window);
+    [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
+    [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
 
     private static bool BringProgramForward(params string[] names)
     {
@@ -30,6 +35,7 @@ internal static partial class Program
         }
         return false;
     }
+
     private static bool HasProgramWindow(string name)
     {
         var found = false;
@@ -37,10 +43,62 @@ internal static partial class Program
             using (process) { try { found |= process.MainWindowHandle != IntPtr.Zero; } catch (InvalidOperationException) { } }
         return found;
     }
+
+    private static int MinimizeProgramWindows(params string[] names)
+    {
+        var processIds = new HashSet<uint>();
+        foreach (var name in names)
+        foreach (var process in Process.GetProcessesByName(name))
+        {
+            using (process)
+            {
+                try { processIds.Add((uint)process.Id); }
+                catch (InvalidOperationException) { }
+            }
+        }
+
+        var minimized = 0;
+        EnumWindowsProc callback = (window, _) =>
+        {
+            if (!IsWindowVisible(window)) return true;
+            GetWindowThreadProcessId(window, out var processId);
+            if (processIds.Contains(processId) && ShowWindowAsync(window, 6)) // SW_MINIMIZE
+                minimized++;
+            return true;
+        };
+        EnumWindows(callback, IntPtr.Zero);
+        GC.KeepAlive(callback);
+        return minimized;
+    }
+
     private static string DetectSteam() => new[] {
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Steam", "steam.exe"),
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Steam", "steam.exe")
     }.FirstOrDefault(File.Exists) ?? "";
+
+    private static string FindRunningSteamPath()
+    {
+        foreach (var process in Process.GetProcessesByName("steam"))
+        {
+            using (process)
+            {
+                try
+                {
+                    var path = process.MainModule?.FileName;
+                    if (!string.IsNullOrWhiteSpace(path) && File.Exists(path)) return path;
+                }
+                catch (Exception) { }
+            }
+        }
+        return DetectSteam();
+    }
+
+    private static bool IsProgramRunning(string name)
+    {
+        var processes = Process.GetProcessesByName(name);
+        try { return processes.Length > 0; }
+        finally { foreach (var process in processes) process.Dispose(); }
+    }
 
     private static bool StartDesktopMode(string directory, string profile, out string? error)
     {
@@ -61,21 +119,43 @@ internal static partial class Program
         {
             try
             {
-                if (profile == "game")
-                    Process.Start(new ProcessStartInfo(path, "steam://open/bigpicture") { UseShellExecute = true });
-                else if (!HasProgramWindow("chrome"))
-                    Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
-                bool focused = false;
-                for (var attempt = 0; attempt < 12; attempt++)
+                if (profile == "work")
                 {
-                    if (profile == "work" ? BringProgramForward("chrome") : BringProgramForward("steam", "steamwebhelper"))
-                    { focused = true; break; }
-                    await Task.Delay(250);
+                    var steamWasRunning = IsProgramRunning("steam");
+                    var steamPath = steamWasRunning ? FindRunningSteamPath() : "";
+                    if (steamWasRunning && !string.IsNullOrWhiteSpace(steamPath))
+                    {
+                        Process.Start(new ProcessStartInfo(steamPath, "steam://close/bigpicture") { UseShellExecute = true });
+                        await Task.Delay(500);
+                    }
+                    var steamWindowsMinimized = MinimizeProgramWindows("steam", "steamwebhelper");
+                    if (!HasProgramWindow("chrome"))
+                        Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+
+                    bool focused = false;
+                    for (var attempt = 0; attempt < 12; attempt++)
+                    {
+                        if (BringProgramForward("chrome")) { focused = true; break; }
+                        await Task.Delay(250);
+                    }
+                    DesktopMessage = focused
+                        ? $"Big Picture закрыт по запросу; окна Steam свёрнуты ({steamWindowsMinimized}), Chrome выведен на передний план."
+                        : "Big Picture закрыт по запросу; окна Steam свёрнуты. Chrome запущен, но Windows не подтвердила перевод окна на передний план.";
                 }
-                DesktopMessage = focused
-                    ? profile == "work" ? "Chrome выведен на передний план; Steam и игры не закрывались."
-                        : "Запрос Big Picture отправлен, окно Steam выведено на передний план."
-                    : "Запрос запуска отправлен, но Windows не подтвердила перевод окна на передний план. Выберите окно вручную.";
+                else
+                {
+                    var chromeWindowsMinimized = MinimizeProgramWindows("chrome");
+                    Process.Start(new ProcessStartInfo(path, "steam://open/bigpicture") { UseShellExecute = true });
+                    bool focused = false;
+                    for (var attempt = 0; attempt < 12; attempt++)
+                    {
+                        if (BringProgramForward("steam", "steamwebhelper")) { focused = true; break; }
+                        await Task.Delay(250);
+                    }
+                    DesktopMessage = focused
+                        ? $"Окна Chrome свёрнуты ({chromeWindowsMinimized}); запрос Big Picture отправлен, Steam выведен на передний план."
+                        : $"Окна Chrome свёрнуты ({chromeWindowsMinimized}); запрос Big Picture отправлен, но Windows не подтвердила перевод окна Steam на передний план.";
+                }
             }
             catch (Exception ex) { DesktopMessage = "Переключение не завершено: " + ex.Message; }
             finally { Log(directory, "Профиль: " + DesktopMessage); Interlocked.Exchange(ref DesktopBusy, 0); }
