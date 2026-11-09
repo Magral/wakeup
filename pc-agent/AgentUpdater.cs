@@ -117,14 +117,15 @@ $target = $env:WAKE_UPDATE_TARGET
 $source = $env:WAKE_UPDATE_SOURCE
 $backup = $target + '.previous'
 $installed = $false
+$recovery = $backup
+if ($env:WAKE_UPDATE_ROLLBACK -eq '1') { $recovery = Join-Path $env:WAKE_UPDATE_STAGING 'replaced.exe' }
 try {
     Wait-Process -Id ([int]$env:WAKE_UPDATE_PID) -Timeout 45 -ErrorAction SilentlyContinue
     if (Get-Process -Id ([int]$env:WAKE_UPDATE_PID) -ErrorAction SilentlyContinue) { throw 'Помощник не завершился.' }
     $ready = $false
     for ($i = 0; $i -lt 60; $i++) {
         try {
-            if ($env:WAKE_UPDATE_ROLLBACK -eq '1') { [IO.File]::Replace($source, $target, $null) }
-            else { [IO.File]::Replace($source, $target, $backup) }
+            [IO.File]::Replace($source, $target, $recovery)
             $ready = $true
             break
         } catch { Start-Sleep -Milliseconds 500 }
@@ -137,7 +138,7 @@ try {
     Add-Content -LiteralPath (Join-Path (Split-Path $target) 'wake-update.log') -Value "$(Get-Date -Format s) Обновление установлено."
 } catch {
     $problem = $_.Exception.Message
-    if ($installed -and $env:WAKE_UPDATE_ROLLBACK -ne '1' -and (Test-Path -LiteralPath $backup)) { [IO.File]::Copy($backup, $target, $true) }
+    if ($installed -and (Test-Path -LiteralPath $recovery)) { [IO.File]::Copy($recovery, $target, $true) }
     Start-Process -FilePath $target -WorkingDirectory (Split-Path $target)
     Add-Type -AssemblyName System.Windows.Forms
     [System.Windows.Forms.MessageBox]::Show("Обновление не завершено. Запущена сохранённая версия. " + $problem, 'Wake Mini') | Out-Null
