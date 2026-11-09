@@ -24,6 +24,7 @@ APP_DEVICE_ID = 'wakemini-app'
 CHAT_DEVICE_ID = 'wakemini-chatgpt'
 COMMANDS = {
     CHAT_DEVICE_ID: 'CHATGPT',
+    'wakemini-sound-tv': 'SOUND_TV',
     RESTART_DEVICE_ID: 'RESTART',
     SLEEP_DEVICE_ID: 'SLEEP',
     APP_DEVICE_ID: 'LAUNCH',
@@ -158,7 +159,7 @@ def connect_agent(cfg, ip):
 
 
 def agent_command(cfg, command):
-    if command not in ('SHUTDOWN', 'RESTART', 'SLEEP', 'LAUNCH', 'CHATGPT', 'CHAT_END', 'PROFILE_WORK', 'PROFILE_GAME'):
+    if command not in ('SHUTDOWN', 'RESTART', 'SLEEP', 'LAUNCH', 'CHATGPT', 'CHAT_END', 'SOUND_TV', 'PROFILE_WORK', 'PROFILE_GAME'):
         raise ValueError('Unsupported agent command')
     ip = socket.gethostbyname(cfg['PC_HOST'])
     sock, nonce = connect_agent(cfg, ip)
@@ -190,9 +191,9 @@ def agent_command(cfg, command):
             raise DeviceError('DEVICE_UNREACHABLE', 'Нет подтверждения. Команда могла выполниться; проверьте компьютер.')
         if validate_reply(reply, command + '_ACCEPTED', nonce, cfg['key']):
             return
-        if (command in ('LAUNCH', 'CHATGPT', 'CHAT_END') or command.startswith('PROFILE_')) and validate_reply(reply, command + '_NOT_CONFIGURED', nonce, cfg['key']):
+        if (command in ('LAUNCH', 'CHATGPT', 'CHAT_END', 'SOUND_TV') or command.startswith('PROFILE_')) and validate_reply(reply, command + '_NOT_CONFIGURED', nonce, cfg['key']):
             raise DeviceError('INVALID_ACTION', 'Сначала настройте соответствующее действие в Wake Mini на компьютере.')
-        if command == 'CHATGPT' and validate_reply(reply, 'CHATGPT_BUSY', nonce, cfg['key']):
+        if command in ('CHATGPT', 'SOUND_TV') and validate_reply(reply, command + '_BUSY', nonce, cfg['key']):
             raise DeviceError('INVALID_ACTION', 'Подготовка разговора или управление телевизором уже выполняется.')
         if (command == 'LAUNCH' or command.startswith('PROFILE_')) and validate_reply(reply, command + '_FAILED', nonce, cfg['key']):
             raise DeviceError('INTERNAL_ERROR', 'Windows не удалось запустить выбранное приложение.')
@@ -222,7 +223,7 @@ def dispatch(event):
     LOG.info('smart_home type=%s request_id=%s', str(kind)[:20], json.dumps(request_id))
     answer = {'request_id': request_id}
     if kind == 'discovery':
-        info = {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.5.4'}
+        info = {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.6.0'}
         answer['payload'] = {'user_id': user_id, 'devices': [
             {'id': DEVICE_ID, 'name': 'Компьютер', 'type': 'devices.types.other',
              'description': 'Включение, выключение и проверка связи с Windows',
@@ -250,6 +251,11 @@ def dispatch(event):
         answer['payload']['devices'].append({
             'id': CHAT_DEVICE_ID, 'name': 'Разговор с ChatGPT', 'type': 'devices.types.other',
             'description': 'Запуск Chrome в фоне, подключение наушников и автоматический запуск голосового режима ChatGPT.',
+            'capabilities': [{'type': CAPABILITY, 'retrievable': False, 'reportable': False}],
+            'device_info': info})
+        answer['payload']['devices'].append({
+            'id': 'wakemini-sound-tv', 'name': 'Звук компьютера на телевизор', 'type': 'devices.types.other',
+            'description': 'Переключить Windows на настроенный HDMI, а LG на динамики.',
             'capabilities': [{'type': CAPABILITY, 'retrievable': False, 'reportable': False}],
             'device_info': info})
         return answer
@@ -404,7 +410,7 @@ def _diagnostic(event):
     finally:
         _TRACE.reset(marker)
     with _RECENT_LOCK: recent = list(_RECENT)
-    body = {'version': '1.5.4', 'probe': result, 'elapsed_ms': round((time.perf_counter() - started) * 1000),
+    body = {'version': '1.6.0', 'probe': result, 'elapsed_ms': round((time.perf_counter() - started) * 1000),
             'stages': trace, 'recent_instance_requests': recent,
             'note': 'Read-only signed probe. No power or app commands. History is instance-local and may be empty.'}
     return {'statusCode': 200, 'headers': {'Content-Type': 'application/json', 'Cache-Control': 'no-store'},
