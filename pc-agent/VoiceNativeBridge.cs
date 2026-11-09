@@ -56,7 +56,8 @@ internal sealed class VoiceNativeBridge
                         && root.TryGetProperty("sessionId", out var endedId) && endedId.ValueKind == JsonValueKind.String)
                     {
                         var ended = endedId.GetString();
-                        if (ended != null && Interlocked.CompareExchange(ref voiceSessionId, null, ended) == ended)
+                        var currentSession = Volatile.Read(ref voiceSessionId);
+                        if (ended != null && currentSession == ended && Interlocked.CompareExchange(ref voiceSessionId, null, currentSession) == currentSession)
                             ConversationEnded?.Invoke();
                         continue;
                     }
