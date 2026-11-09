@@ -4,7 +4,7 @@ import os
 import subprocess
 import tempfile
 
-script = Path('pc-agent/AgentUpdater.cs').read_text().split('const string script = """\n', 1)[1].split('\n""";', 1)[0]
+script = Path('pc-agent/AgentUpdater.cs').read_text(encoding='utf-8').split('const string script = """\n', 1)[1].split('\n""";', 1)[0]
 # Avoid a modal dialog in a failure-path test; file replacement and recovery remain unchanged.
 script = script.replace('Add-Type -AssemblyName System.Windows.Forms', '')
 script = script.replace('[System.Windows.Forms.MessageBox]::Show("Обновление не завершено. Запущена сохранённая версия. " + $problem, \'Wake Mini\') | Out-Null', 'Write-Output $problem')
