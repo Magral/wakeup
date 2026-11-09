@@ -58,13 +58,23 @@
   let sessionId = null, endTracker = createEndTracker();
   // A pause or muted microphone is not an ended conversation. Require the
   // explicit start control to return after an active voice UI was observed.
-  setInterval(() => {
+  function checkVoiceEnd() {
     if (!sessionId) return;
     const found = controls(document);
     if (!endTracker(found.some(x => x.kind === 'stop'), found.some(x => x.kind === 'start'), Date.now())) return;
     const id = sessionId; sessionId = null;
     chrome.runtime.sendMessage({type: 'wakemini_voice_ended', sessionId: id}).catch(() => {});
-  }, 500);
+  }
+  setInterval(checkVoiceEnd, 500);
+  // DOM changes also wake the check: hidden-tab timer throttling must not be
+  // the only mechanism used to notice that the voice UI has closed.
+  let endCheckTimer = null;
+  new MutationObserver(() => {
+    checkVoiceEnd();
+    if (endCheckTimer === null) endCheckTimer = setTimeout(() => {
+      endCheckTimer = null; checkVoiceEnd();
+    }, 1600);
+  }).observe(document.documentElement, {subtree: true, childList: true, attributes: true});
   chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (sender.id !== chrome.runtime.id || location.origin !== 'https://chatgpt.com') return;
     if (message?.type === 'wakemini_voice_cancel') {
