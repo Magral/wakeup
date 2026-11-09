@@ -37,13 +37,13 @@ jobs:
           $errors = $null
           [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'scripts/Setup-WakeMini-Signing.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
           if ($errors.Count) { $errors | Format-List; exit 1 }
-      - name: Publish self-contained preview
+      - name: Publish self-contained 1.5.4 helper
         run: dotnet publish pc-agent/WakeMiniAgent.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish/package
-      - name: Package tested helper and cloud handler
+      - name: Package tested 1.5.4 release
         run: python scripts/package-preview.py
       - uses: actions/upload-artifact@v4
         with:
-          name: WakeMini-1.5.2-preview
+          name: WakeMini-1.5.4
           path: |
             publish/bundle/WakeMini-1.5.2-preview.zip
             publish/bundle/WakeMini-Alice-Cloud-1.5.4.zip
