@@ -86,7 +86,17 @@ internal static partial class Program
             GetClassName(window, className, className.Capacity);
             if (className.ToString() is "Shell_TrayWnd" or "Shell_SecondaryTrayWnd" or "Progman" or "WorkerW") return true;
             GetWindowThreadProcessId(window, out var id);
-            if (!steamIds.Contains(id) && ShowWindowAsync(window, 6)) count++;
+            if (steamIds.Contains(id)) return true;
+            // Only ordinary app windows: tool/no-activate/layered windows include
+            // performance HUDs. Never minimize them, even when visible.
+            var style = GetWindowLongPtr(window, -16).ToInt64();
+            var extendedStyle = GetWindowLongPtr(window, -20).ToInt64();
+            string processName;
+            try { using var process = Process.GetProcessById((int)id); processName = process.ProcessName; }
+            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
+            { return true; } // Unknown owner: leave the window alone.
+            if (DesktopWindowPolicy.ShouldMinimize(style, extendedStyle, processName)
+                && ShowWindowAsync(window, 6)) count++;
             return true;
         };
         EnumWindows(callback, IntPtr.Zero);
@@ -98,6 +108,9 @@ internal static partial class Program
     [DllImport("user32.dll")] private static extern IntPtr GetDesktopWindow();
     [DllImport("user32.dll", CharSet = CharSet.Unicode)]
     private static extern int GetClassName(IntPtr window, System.Text.StringBuilder className, int maxCount);
+
+    [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")]
+    private static extern IntPtr GetWindowLongPtr(IntPtr window, int index);
 
     private static string DetectSteam() => new[] {
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Steam", "steam.exe"),

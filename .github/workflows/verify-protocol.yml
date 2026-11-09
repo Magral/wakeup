@@ -11,6 +11,7 @@ jobs:
         with:
           dotnet-version: '8.0.x'
       - run: dotnet run --project tests/protocol/ProtocolTests.csproj
+      - run: dotnet run --project tests/desktop/DesktopTests.csproj
       - run: dotnet run --project tests/tv/TvTests.csproj
       - run: dotnet run --project tests/chat/ChatTests.csproj
       - run: node --test tests/chat/voice-*.test.js
@@ -37,15 +38,15 @@ jobs:
           $errors = $null
           [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'scripts/Setup-WakeMini-Signing.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
           if ($errors.Count) { $errors | Format-List; exit 1 }
-      - name: Publish self-contained 1.5.5 helper
+      - name: Publish self-contained 1.5.6 helper
         run: dotnet publish pc-agent/WakeMiniAgent.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish/package
-      - name: Package tested 1.5.5 release
+      - name: Package tested 1.5.6 release
         run: python scripts/package-preview.py
       - uses: actions/upload-artifact@v4
         with:
-          name: WakeMini-1.5.5
+          name: WakeMini-1.5.6
           path: |
-            publish/bundle/WakeMini-1.5.5.zip
+            publish/bundle/WakeMini-1.5.6.zip
             publish/bundle/WakeMini-Alice-Cloud-1.5.4.zip
             publish/bundle/SHA256SUMS.txt
           if-no-files-found: error
@@ -60,14 +61,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: WakeMini-1.5.5
+          name: WakeMini-1.5.6
           path: release
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.5.5
-          name: Wake Mini 1.5.5
+          tag_name: v1.5.6
+          name: Wake Mini 1.5.6
           target_commitish: ${{ github.sha }}
-          body_path: docs/UPDATE-1.5.5.md
+          body_path: docs/UPDATE-1.5.6.md
           files: release/*
           fail_on_unmatched_files: true
           prerelease: false
