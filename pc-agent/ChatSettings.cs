@@ -107,7 +107,9 @@ internal static partial class Program
                     else
                     {
                         ChatAudio.Validate(settings.OutputId, settings.MicrophoneId);
-                        var workflow = new ChatPreparation(ReleaseTv,
+                        var headsetReady = ChatAudio.Ready(settings.OutputId, settings.MicrophoneId);
+                        var workflow = new ChatPreparation(
+                            token => headsetReady ? Task.CompletedTask : ReleaseTv(token),
                             token => ChatAudio.ConnectAsync(settings.OutputId, settings.MicrophoneId, token),
                             () => ChatAudio.SelectDefaults(settings.OutputId, settings.MicrophoneId),
                             async token =>
