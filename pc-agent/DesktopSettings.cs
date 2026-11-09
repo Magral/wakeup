@@ -105,9 +105,9 @@ internal static partial class Program
         var settings = ReadSettings(directory);
         var pair = SettingsWindow("профили запуска"); using var form = pair.Form;
         var modes = Row(pair.Grid, new CheckBox { Text = "Работа — Chrome, Игры — Steam Big Picture (переключать окна)", AutoSize = true, Checked = settings.UseDesktopModes });
-        Row(pair.Grid, new Label { AutoSize = true, MaximumSize = new(700, 0), Text = "Выберите Chrome для Работы и steam.exe для Игр. В режиме переключения параметры запуска этих двух профилей не используются. Кино остаётся обычным запуском выбранной программы. Автозапуск Windows не меняется." });
+        Row(pair.Grid, new Label { AutoSize = true, MaximumSize = new(700, 0), Text = "Выберите Chrome для Работы и steam.exe для Игр. В режиме переключения параметры запуска этих двух профилей не используются. Автозапуск Windows не меняется." });
         var inputs = new Dictionary<string, (TextBox Path, TextBox Args)>();
-        foreach (var (id, title) in new[] { ("work", "Работа"), ("game", "Игры"), ("cinema", "Кино") })
+        foreach (var (id, title) in new[] { ("work", "Работа"), ("game", "Игры") })
         {
             var profile = settings.Profiles.GetValueOrDefault(id);
             var path = Field(pair.Grid, title + " — программа (.exe)", profile?.Path);
