@@ -47,3 +47,18 @@ test('expired command never starts a late microphone session', async () => {
   const result = await execute('start', doc(() => [button('Start voice chat', () => assert.fail())]), async () => {}, () => false, Date.now() - 1);
   assert.equal(result.code, 'VOICE_CANCELLED');
 });
+
+test('audio return requires active session followed by stable start control, not silence or mute', () => {
+  const {createEndTracker} = require('../../chrome-voice-extension/content.js');
+  const ended = createEndTracker();
+  assert.equal(ended(false, true, 0), false);
+  assert.equal(ended(false, true, 5000), false);
+  assert.equal(ended(true, false, 6000), false);
+  assert.equal(ended(true, false, 15000), false); // muted or silence: voice UI remains active
+  assert.equal(ended(false, false, 20000), false); // UI loading, not confirmed ended
+  assert.equal(ended(false, true, 21000), false);
+  assert.equal(ended(false, true, 22000), false);
+  assert.equal(ended(true, false, 22500), false); // transient disappearance resets debounce
+  assert.equal(ended(false, true, 23000), false);
+  assert.equal(ended(false, true, 24500), true);
+});
