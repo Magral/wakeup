@@ -253,7 +253,7 @@ internal static partial class Program
     private static bool IsNonce(string value) => value.Length == 32 && value.All(Uri.IsHexDigit);
 
     private static bool IsAllowedCommand(string command) =>
-        command is "CHATGPT" or "CHAT_END" or "CHAT_STATUS" or "CHAT_CANCEL" or "TV_PC" or "TV_STATUS" or "TV_CANCEL" or "SHUTDOWN" or "RESTART" or "SLEEP" or "LAUNCH" or "PROFILE_WORK" or "PROFILE_GAME" or "PROFILE_CINEMA";
+        command is "CHATGPT" or "CHAT_END" or "CHAT_STATUS" or "CHAT_CANCEL" or "TV_PC" or "TV_STATUS" or "TV_CANCEL" or "SHUTDOWN" or "RESTART" or "SLEEP" or "LAUNCH" or "PROFILE_WORK" or "PROFILE_GAME";
 
     private static string SignedReply(byte[] key, string verb, string nonce) =>
         $"WM1|{verb}|{nonce}|{Sign(key, $"{verb}|{nonce}")}";
