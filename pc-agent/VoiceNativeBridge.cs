@@ -33,6 +33,9 @@ internal sealed class VoiceNativeBridge
     private NamedPipeServerStream? connection;
     private readonly SemaphoreSlim writes = new(1, 1);
     private readonly ConcurrentDictionary<string, (string Action, TaskCompletionSource<string> Completion)> pending = new();
+    private string? voiceSessionId;
+    internal bool HasVoiceSession => Volatile.Read(ref voiceSessionId) != null;
+    internal event Action? ConversationEnded;
     internal bool Connected { get { lock (gate) return connection?.IsConnected == true; } }
 
     internal async Task RunServerAsync(CancellationToken token)
@@ -49,6 +52,14 @@ internal sealed class VoiceNativeBridge
                 {
                     using var json = JsonDocument.Parse(bytes);
                     var root = json.RootElement;
+                    if (root.TryGetProperty("event", out var eventName) && eventName.GetString() == "voice_ended"
+                        && root.TryGetProperty("sessionId", out var endedId) && endedId.ValueKind == JsonValueKind.String)
+                    {
+                        var ended = endedId.GetString();
+                        if (ended != null && Interlocked.CompareExchange(ref voiceSessionId, null, ended) == ended)
+                            ConversationEnded?.Invoke();
+                        continue;
+                    }
                     if (!root.TryGetProperty("id", out var id) || id.ValueKind != JsonValueKind.String) continue;
                     if (!pending.TryGetValue(id.GetString()!, out var completion)) continue;
                     var ok = root.TryGetProperty("ok", out var value) && value.ValueKind == JsonValueKind.True;
@@ -83,6 +94,7 @@ internal sealed class VoiceNativeBridge
         lock (gate) pipe = connection?.IsConnected == true ? connection : throw new InvalidOperationException(
             "Нет связи с расширением. Откройте Chrome с установленным Wake Mini Voice и оставьте его свёрнутым; окно игры помощник не переключает.");
         var id = Guid.NewGuid().ToString("N");
+        if (action == "start") Volatile.Write(ref voiceSessionId, id);
         var completion = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
         if (!pending.TryAdd(id, (action, completion))) throw new InvalidOperationException("Voice request collision");
         try
