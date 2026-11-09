@@ -71,6 +71,34 @@ internal static partial class Program
         return minimized;
     }
 
+    private static int MinimizeOtherWindows()
+    {
+        var steamIds = new HashSet<uint>();
+        foreach (var name in new[] { "steam", "steamwebhelper" })
+            foreach (var process in Process.GetProcessesByName(name))
+                using (process) { steamIds.Add((uint)process.Id); }
+        var count = 0;
+        EnumWindowsProc callback = (window, _) =>
+        {
+            if (!IsWindowVisible(window) || IsIconic(window)
+                || window == GetShellWindow() || window == GetDesktopWindow()) return true;
+            var className = new System.Text.StringBuilder(256);
+            GetClassName(window, className, className.Capacity);
+            if (className.ToString() is "Shell_TrayWnd" or "Shell_SecondaryTrayWnd" or "Progman" or "WorkerW") return true;
+            GetWindowThreadProcessId(window, out var id);
+            if (!steamIds.Contains(id) && ShowWindowAsync(window, 6)) count++;
+            return true;
+        };
+        EnumWindows(callback, IntPtr.Zero);
+        GC.KeepAlive(callback);
+        return count;
+    }
+
+    [DllImport("user32.dll")] private static extern IntPtr GetShellWindow();
+    [DllImport("user32.dll")] private static extern IntPtr GetDesktopWindow();
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern int GetClassName(IntPtr window, System.Text.StringBuilder className, int maxCount);
+
     private static string DetectSteam() => new[] {
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Steam", "steam.exe"),
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Steam", "steam.exe")
@@ -144,7 +172,7 @@ internal static partial class Program
                 }
                 else
                 {
-                    var chromeWindowsMinimized = MinimizeProgramWindows("chrome");
+                    var chromeWindowsMinimized = MinimizeOtherWindows();
                     Process.Start(new ProcessStartInfo(path, "steam://open/bigpicture") { UseShellExecute = true });
                     bool focused = false;
                     for (var attempt = 0; attempt < 12; attempt++)
@@ -153,8 +181,8 @@ internal static partial class Program
                         await Task.Delay(250);
                     }
                     DesktopMessage = focused
-                        ? $"Окна Chrome свёрнуты ({chromeWindowsMinimized}); запрос Big Picture отправлен, Steam выведен на передний план."
-                        : $"Окна Chrome свёрнуты ({chromeWindowsMinimized}); запрос Big Picture отправлен, но Windows не подтвердила перевод окна Steam на передний план.";
+                        ? $"Окна остальных программ свёрнуты ({chromeWindowsMinimized}); запрос Big Picture отправлен, Steam выведен на передний план."
+                        : $"Окна остальных программ свёрнуты ({chromeWindowsMinimized}); запрос Big Picture отправлен, но Windows не подтвердила перевод окна Steam на передний план.";
                 }
             }
             catch (Exception ex) { DesktopMessage = "Переключение не завершено: " + ex.Message; }
