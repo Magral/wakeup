@@ -18,7 +18,6 @@ internal static partial class Program
             {
                 try
                 {
-                    if (VoiceBridge.Connected) await VoiceBridge.SendAsync("stop", cancellation.Token);
                     ChatAudio.SelectOutput(settings.TvOutputId);
                     await new LgWebOsClient(tv, _ => { }).ReleaseBluetoothAudioAsync(cancellation.Token);
                     lock (TvLock) { ChatState = "READY"; ChatMessage = "Windows выводит звук на HDMI телевизора; LG подтвердил динамики."; }
