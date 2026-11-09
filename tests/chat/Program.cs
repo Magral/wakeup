@@ -70,6 +70,17 @@ using (var lifetime = new CancellationTokenSource(TimeSpan.FromSeconds(12)))
     Assert(!result.IsCompleted, "Wrong request ID completed voice start");
     await VoiceFrames.WriteAsync(client, System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new { id, ok = true, code = "VOICE_UI_ACTIVE" }), lifetime.Token);
     Assert(await result == "VOICE_UI_ACTIVE", "Voice result not delivered");
+    var endedCount = 0;
+    bridge.ConversationEnded += () => Interlocked.Increment(ref endedCount);
+    await VoiceFrames.WriteAsync(client, System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new { @event = "voice_ended", sessionId = "wrong" }), lifetime.Token);
+    await Task.Delay(30, lifetime.Token);
+    Assert(endedCount == 0 && bridge.HasVoiceSession, "Wrong session ended current conversation");
+    await VoiceFrames.WriteAsync(client, System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new { @event = "voice_ended", sessionId = id }), lifetime.Token);
+    for (var wait = 0; wait < 100 && endedCount == 0; wait++) await Task.Delay(10, lifetime.Token);
+    Assert(endedCount == 1 && !bridge.HasVoiceSession, "Ended conversation did not clear active session");
+    await VoiceFrames.WriteAsync(client, System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(new { @event = "voice_ended", sessionId = id }), lifetime.Token);
+    await Task.Delay(30, lifetime.Token);
+    Assert(endedCount == 1, "Duplicate end event was not ignored");
     using var cancelled = CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token);
     var cancelResult = bridge.SendAsync("start", cancelled.Token);
     using var beforeCancel = System.Text.Json.JsonDocument.Parse((await VoiceFrames.ReadAsync(client, lifetime.Token))!);
