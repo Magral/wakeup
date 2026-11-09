@@ -29,7 +29,6 @@ COMMANDS = {
     APP_DEVICE_ID: 'LAUNCH',
     'wakemini-profile-work': 'PROFILE_WORK',
     'wakemini-profile-game': 'PROFILE_GAME',
-    'wakemini-profile-cinema': 'PROFILE_CINEMA',
 }
 LOG = logging.getLogger(__name__)
 _AUTH_CACHE = {}
@@ -159,7 +158,7 @@ def connect_agent(cfg, ip):
 
 
 def agent_command(cfg, command):
-    if command not in ('SHUTDOWN', 'RESTART', 'SLEEP', 'LAUNCH', 'CHATGPT', 'CHAT_END', 'PROFILE_WORK', 'PROFILE_GAME', 'PROFILE_CINEMA'):
+    if command not in ('SHUTDOWN', 'RESTART', 'SLEEP', 'LAUNCH', 'CHATGPT', 'CHAT_END', 'PROFILE_WORK', 'PROFILE_GAME'):
         raise ValueError('Unsupported agent command')
     ip = socket.gethostbyname(cfg['PC_HOST'])
     sock, nonce = connect_agent(cfg, ip)
@@ -223,7 +222,7 @@ def dispatch(event):
     LOG.info('smart_home type=%s request_id=%s', str(kind)[:20], json.dumps(request_id))
     answer = {'request_id': request_id}
     if kind == 'discovery':
-        info = {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.5.3'}
+        info = {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.5.4'}
         answer['payload'] = {'user_id': user_id, 'devices': [
             {'id': DEVICE_ID, 'name': 'Компьютер', 'type': 'devices.types.other',
              'description': 'Включение, выключение и проверка связи с Windows',
@@ -242,7 +241,7 @@ def dispatch(event):
              'capabilities': [{'type': CAPABILITY, 'retrievable': False, 'reportable': False}],
              'device_info': info},
         ]}
-        for profile, title in [('work', 'Рабочий режим компьютера'), ('game', 'Игровой режим компьютера'), ('cinema', 'Кино на компьютере')]:
+        for profile, title in [('work', 'Рабочий режим компьютера'), ('game', 'Игровой режим компьютера')]:
             answer['payload']['devices'].append({
                 'id': 'wakemini-profile-' + profile, 'name': title, 'type': 'devices.types.other',
                 'description': 'Запуск локального профиля Windows',
@@ -250,7 +249,7 @@ def dispatch(event):
                 'device_info': info})
         answer['payload']['devices'].append({
             'id': CHAT_DEVICE_ID, 'name': 'Разговор с ChatGPT', 'type': 'devices.types.other',
-            'description': 'Подготовка LG, наушников и Chrome. Ход выполнения — в помощнике Windows; запуск голоса на странице вручную.',
+            'description': 'Запуск Chrome в фоне, подключение наушников и автоматический запуск голосового режима ChatGPT.',
             'capabilities': [{'type': CAPABILITY, 'retrievable': False, 'reportable': False}],
             'device_info': info})
         return answer
@@ -405,7 +404,7 @@ def _diagnostic(event):
     finally:
         _TRACE.reset(marker)
     with _RECENT_LOCK: recent = list(_RECENT)
-    body = {'version': '1.5.3', 'probe': result, 'elapsed_ms': round((time.perf_counter() - started) * 1000),
+    body = {'version': '1.5.4', 'probe': result, 'elapsed_ms': round((time.perf_counter() - started) * 1000),
             'stages': trace, 'recent_instance_requests': recent,
             'note': 'Read-only signed probe. No power or app commands. History is instance-local and may be empty.'}
     return {'statusCode': 200, 'headers': {'Content-Type': 'application/json', 'Cache-Control': 'no-store'},
