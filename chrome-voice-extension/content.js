@@ -43,9 +43,28 @@
     }
     return {ok: false, code: clicked ? 'VOICE_NOT_CONFIRMED' : 'VOICE_CONTROL_NOT_FOUND'};
   }
-  if (typeof module !== 'undefined') module.exports = {classify, controls, execute};
+  function createEndTracker() {
+    let activeSeen = false, since = null;
+    return (active, start, now) => {
+      if (active) { activeSeen = true; since = null; return false; }
+      if (!activeSeen || !start) { since = null; return false; }
+      if (since === null) { since = now; return false; }
+      return now - since >= 1500;
+    };
+  }
+  if (typeof module !== 'undefined') module.exports = {classify, controls, execute, createEndTracker};
   if (typeof chrome === 'undefined' || !chrome.runtime?.onMessage) return;
   let operation = null;
+  let sessionId = null, endTracker = createEndTracker();
+  // A pause or muted microphone is not an ended conversation. Require the
+  // explicit start control to return after an active voice UI was observed.
+  setInterval(() => {
+    if (!sessionId) return;
+    const found = controls(document);
+    if (!endTracker(found.some(x => x.kind === 'stop'), found.some(x => x.kind === 'start'), Date.now())) return;
+    const id = sessionId; sessionId = null;
+    chrome.runtime.sendMessage({type: 'wakemini_voice_ended', sessionId: id}).catch(() => {});
+  }, 500);
   chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (sender.id !== chrome.runtime.id || location.origin !== 'https://chatgpt.com') return;
     if (message?.type === 'wakemini_voice_cancel') {
@@ -57,6 +76,7 @@
       respond({ok: false, code: 'VOICE_CANCELLED'}); return;
     }
     if (operation) { respond({ok: false, code: 'VOICE_OPERATION_BUSY'}); return; }
+    if (message.action === 'start') { sessionId = message.id; endTracker = createEndTracker(); }
     const current = {id: message.id, cancelled: false}; operation = current;
     execute(message.action, document, ms => new Promise(r => setTimeout(r, ms)), () => current.cancelled, message.expires)
       .then(respond, () => respond({ok: false, code: 'VOICE_PAGE_ERROR'})).finally(() => { operation = null; });
