@@ -46,5 +46,6 @@ jobs:
           name: WakeMini-1.5.2-preview
           path: |
             publish/bundle/WakeMini-1.5.2-preview.zip
+            publish/bundle/WakeMini-Alice-Cloud-1.5.4.zip
             publish/bundle/SHA256SUMS.txt
           if-no-files-found: error
