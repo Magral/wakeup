@@ -48,16 +48,16 @@ test('stop without owned target never clicks another conversation', async () => 
 
 test('only the managed current session can return audio, exactly once', async () => {
   const h = harness([{id:1}]); await h.run({id, action:'start'});
-  h.event({type:'wakemini_voice_ended', sessionId:id}, 2);
-  h.event({type:'wakemini_voice_ended', sessionId:'b'.repeat(32)});
+  await h.event({type:'wakemini_voice_ended', sessionId:id}, 2);
+  await h.event({type:'wakemini_voice_ended', sessionId:'b'.repeat(32)});
   assert.equal(h.replies.length, 1);
-  h.event({type:'wakemini_voice_ended', sessionId:id});
-  h.event({type:'wakemini_voice_ended', sessionId:id});
+  await h.event({type:'wakemini_voice_ended', sessionId:id});
+  await h.event({type:'wakemini_voice_ended', sessionId:id});
   assert.equal(h.replies.length, 2);
   assert.equal(h.replies[1].event, 'voice_ended');
 });
 test('closing managed conversation sends ended event', async () => {
   const h = harness([{id:1}]); await h.run({id, action:'start'});
-  h.removed(2); assert.equal(h.replies.length, 1);
-  h.removed(1); assert.equal(h.replies[1].sessionId, id);
+  await h.removed(2); assert.equal(h.replies.length, 1);
+  await h.removed(1); assert.equal(h.replies[1].sessionId, id);
 });
