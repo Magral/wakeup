@@ -37,6 +37,30 @@ internal static partial class Program
             || !string.Equals(Path.GetFileName(path), "chrome.exe", StringComparison.OrdinalIgnoreCase))
             throw new InvalidOperationException("Выберите установленный Google Chrome — файл chrome.exe.");
     }
+    private static async Task EnsureVoiceExtensionAsync(string chromePath, CancellationToken token)
+    {
+        if (!VoiceBridge.Connected)
+        {
+            Process.Start(new ProcessStartInfo(chromePath)
+            {
+                UseShellExecute = true,
+                WindowStyle = ProcessWindowStyle.Minimized,
+                WorkingDirectory = Path.GetDirectoryName(chromePath)
+            });
+            for (var attempt = 0; attempt < 60; attempt++)
+            {
+                token.ThrowIfCancellationRequested();
+                if (VoiceBridge.Connected)
+                {
+                    MinimizeProgramWindows("chrome");
+                    return;
+                }
+                await Task.Delay(250, token);
+            }
+            throw new IOException("Chrome запущен свёрнутым, но расширение Wake Mini Voice не подключилось. Проверьте, что расширение установлено и включено.");
+        }
+    }
+
     private static string StartConversation(string directory, bool tvOnly = false)
     {
         lock (TvLock)
@@ -82,8 +106,6 @@ internal static partial class Program
                     }
                     else
                     {
-                        if (settings.BackgroundVoice && !VoiceBridge.Connected)
-                            throw new InvalidOperationException("Откройте Chrome с установленным расширением Wake Mini Voice и оставьте его свёрнутым. Связь с расширением пока не установлена.");
                         ChatAudio.Validate(settings.OutputId, settings.MicrophoneId);
                         var workflow = new ChatPreparation(ReleaseTv,
                             token => ChatAudio.ConnectAsync(settings.OutputId, settings.MicrophoneId, token),
@@ -91,7 +113,10 @@ internal static partial class Program
                             async token =>
                             {
                                 if (settings.BackgroundVoice)
+                                {
+                                    await EnsureVoiceExtensionAsync(settings.ChromePath, token);
                                     await VoiceBridge.SendAsync("start", token);
+                                }
                                 else
                                 {
                                     Process.Start(new ProcessStartInfo(settings.ChromePath) { UseShellExecute = true,
@@ -161,7 +186,7 @@ internal static partial class Program
         var grid = window.Grid;
         Row(grid, new Label { AutoSize = true, MaximumSize = new(700, 0), Text =
             "LG C5 → динамики → FreeBuds SE 2 на ПК → звук и микрофон → ChatGPT в Chrome. " +
-            "Один раз подключите наушники к Windows и выберите их ниже. Профили Работа / Игры / Кино сохраняются." });
+            "Один раз подключите наушники к Windows и выберите их ниже. В фоновом режиме Chrome запустится по команде, подключится к расширению и откроет голос ChatGPT." });
         var enabled = Row(grid, new CheckBox { AutoSize = true, Text = "Разрешить подготовку разговора по команде Алисы", Checked = settings.Enabled });
         var background = Row(grid, new CheckBox { AutoSize = true, Text = "Запускать голос ChatGPT в фоне через расширение Chrome", Checked = settings.BackgroundVoice });
         var register = Row(grid, new Button { AutoSize = true, Text = "Подключить помощник к расширению Chrome" });
@@ -182,7 +207,7 @@ internal static partial class Program
         var input = Select("Микрофон — выберите микрофон FreeBuds SE 2", true, settings.MicrophoneId);
         Row(grid, new Label { AutoSize = true, MaximumSize = new(700, 0), Text =
             "Если устройства нет в списке, подключите наушники к Windows и откройте это окно заново. " +
-            "Браузер должен использовать системный микрофон; разрешение на микрофон и запуск голоса выполняются на странице ChatGPT. " +
+            "В Chrome заранее войдите в ChatGPT и один раз разрешите доступ к микрофону; при команде голос включится автоматически. " +
             "Проверка LG переключает звук телевизора на динамики. Возврат наушников к ТВ пока выполняется вручную." });
         var save = Row(grid, new Button { Text = "Сохранить", AutoSize = true });
         var testTv = Row(grid, new Button { Text = "Проверить LG: переключить на динамики", AutoSize = true });
@@ -215,7 +240,7 @@ internal static partial class Program
         testTv.Click += (_, _) => Start(true);
         testAll.Click += (_, _) => Start(false);
         cancel.Click += (_, _) => CancelConversation();
-        register.Click += (_, _) => { try { VoiceNativeBridge.RegisterHost(directory); status.Text = "Связь зарегистрирована. Загрузите папку chrome-voice-extension на странице chrome://extensions и оставьте Chrome запущенным."; } catch (Exception ex) { status.Text = ex.Message; } };
+        register.Click += (_, _) => { try { VoiceNativeBridge.RegisterHost(directory); status.Text = "Связь зарегистрирована. Установите папку chrome-voice-extension на странице chrome://extensions. Оставлять Chrome запущенным не нужно — помощник откроет его при команде."; } catch (Exception ex) { status.Text = ex.Message; } };
         endVoice.Click += (_, _) => { status.Text = StopBackgroundConversation(directory) == "CHAT_END_ACCEPTED" ? "Завершаю голосовой разговор…" : "Нет связи с расширением Chrome."; };
         using var timer = new System.Windows.Forms.Timer { Interval = 500 };
         string previous; lock (TvLock) previous = ChatMessage;
