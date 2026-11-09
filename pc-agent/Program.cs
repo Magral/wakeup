@@ -42,6 +42,17 @@ internal static partial class Program
 
         using var stop = new CancellationTokenSource();
         var serverTask = RunServerAsync(baseDirectory, key, stop.Token);
+        VoiceBridge.ConversationEnded += () => _ = Task.Run(async () =>
+        {
+            for (var attempt = 0; attempt < 20; attempt++)
+            {
+                await Task.Delay(500);
+                if (VoiceBridge.HasVoiceSession) return;
+                var result = ReturnSoundToTv(baseDirectory);
+                if (result == "SOUND_TV_BUSY") continue;
+                Log(baseDirectory, "Автовозврат звука: " + result); return;
+            }
+        });
         var voiceBridgeTask = VoiceBridge.RunServerAsync(stop.Token);
         using var tray = new AgentTrayContext(baseDirectory);
         Application.Run(tray);
