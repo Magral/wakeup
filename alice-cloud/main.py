@@ -1,4 +1,8 @@
 """Private Yandex Smart Home provider; stdlib only. No secrets in source."""
+from collections import deque
+from contextvars import ContextVar
+from functools import wraps
+import threading
 import base64
 import hashlib
 import hmac
@@ -29,6 +33,10 @@ COMMANDS = {
 LOG = logging.getLogger(__name__)
 _AUTH_CACHE = {}
 _AUTH_CACHE_TTL_SECONDS = 20
+
+
+class IdentityUnavailable(PermissionError):
+    pass
 
 
 class DeviceError(Exception):
@@ -74,7 +82,7 @@ def authorize(header, cfg):
     for attempt in range(2):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            raise PermissionError('Authorization unavailable')
+            raise IdentityUnavailable('Authorization unavailable')
         try:
             with urlopen(request, timeout=min(0.6, remaining)) as response:
                 user = json.load(response)
@@ -84,10 +92,12 @@ def authorize(header, cfg):
         except (URLError, TimeoutError, ConnectionError):
             retryable = True
         except Exception:
-            raise PermissionError('Authorization unavailable') from None
+            raise IdentityUnavailable('Authorization unavailable') from None
         LOG.warning('identity_lookup_failed attempt=%s retryable=%s', attempt + 1, retryable)
-        if not retryable or attempt == 1:
-            raise PermissionError('Authorization unavailable') from None
+        if not retryable:
+            raise PermissionError('Account not authorized') from None
+        if attempt == 1:
+            raise IdentityUnavailable('Authorization unavailable') from None
     if str(user.get('login', '')).casefold() != cfg['YANDEX_LOGIN'].casefold() or user.get('client_id') != cfg['OAUTH_CLIENT_ID']:
         raise PermissionError('Account not allowed')
     user_id = str(user['id'])
@@ -212,7 +222,7 @@ def dispatch(event):
     LOG.info('smart_home type=%s request_id=%s', str(kind)[:20], json.dumps(request_id))
     answer = {'request_id': request_id}
     if kind == 'discovery':
-        info = {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.5.1'}
+        info = {'manufacturer': 'Wake Mini', 'model': 'PC power', 'sw_version': '1.5.4'}
         answer['payload'] = {'user_id': user_id, 'devices': [
             {'id': DEVICE_ID, 'name': 'Компьютер', 'type': 'devices.types.other',
              'description': 'Включение, выключение и проверка связи с Windows',
@@ -308,7 +318,7 @@ def dispatch(event):
     return answer
 
 
-def handler(event, context):
+def _provider_handler(event, context):
     """Native Smart Home Cloud Function (raw); also supports an HTTP envelope for testing."""
     http = isinstance(event, dict) and 'httpMethod' in event
     try:
@@ -322,6 +332,10 @@ def handler(event, context):
             return result
         return {'statusCode': 200, 'headers': {'Content-Type': 'application/json'},
                 'body': json.dumps(result, ensure_ascii=False)}
+    except IdentityUnavailable:
+        if not http:
+            raise RuntimeError('Identity service temporarily unavailable') from None
+        return {'statusCode': 503, 'body': ''}
     except PermissionError:
         if not http:
             # Raw Cloud Functions always return HTTP 200 for normal returns;
@@ -332,3 +346,88 @@ def handler(event, context):
         if not http:
             raise ValueError('Invalid request or missing function settings') from None
         return {'statusCode': 400, 'body': ''}
+
+
+# Per-invocation timings; recent history is private, bounded and instance-local.
+_TRACE = ContextVar('wake_trace', default=None)
+_RECENT = deque(maxlen=20)
+_RECENT_LOCK = threading.Lock()
+
+
+def _outcome(exc):
+    if isinstance(exc, IdentityUnavailable): return 'identity_unavailable'
+    if isinstance(exc, PermissionError): return 'unauthorized'
+    if isinstance(exc, DeviceError): return exc.code
+    if isinstance(exc, OSError): return 'network_error'
+    return 'internal_error'
+
+
+def _timed(name, function):
+    @wraps(function)
+    def call(*args, **kwargs):
+        trace = _TRACE.get()
+        if trace is None: return function(*args, **kwargs)
+        started = time.perf_counter()
+        result = 'ok'
+        try: return function(*args, **kwargs)
+        except Exception as exc:
+            result = _outcome(exc)
+            raise
+        finally:
+            trace.append({'stage': name, 'result': result,
+                          'ms': round((time.perf_counter() - started) * 1000)})
+    return call
+
+
+for _name in ('authorize', 'connect_agent', 'agent_command', 'power_state', 'power_on'):
+    globals()[_name] = _timed(_name, globals()[_name])
+
+
+def _diagnostic(event):
+    headers = {str(k).lower(): v for k, v in (event.get('headers') or {}).items()}
+    supplied = headers.get('x-wakemini-key', '')
+    expected = os.environ.get('AGENT_KEY', '').strip()
+    if not isinstance(supplied, str) or not re.fullmatch('[0-9a-fA-F]{64}', expected) or not hmac.compare_digest(supplied.lower(), expected.lower()):
+        return {'statusCode': 403, 'body': ''}
+    trace = []
+    marker = _TRACE.set(trace)
+    started = time.perf_counter()
+    try:
+        cfg = settings()
+        ip = socket.gethostbyname(cfg['PC_HOST'])
+        trace.append({'stage': 'dns', 'result': 'ok', 'ms': round((time.perf_counter() - started) * 1000)})
+        sock, _ = connect_agent(cfg, ip)
+        sock.close()
+        result = 'pc_replied'
+    except Exception as exc:
+        result = _outcome(exc)
+    finally:
+        _TRACE.reset(marker)
+    with _RECENT_LOCK: recent = list(_RECENT)
+    body = {'version': '1.5.4', 'probe': result, 'elapsed_ms': round((time.perf_counter() - started) * 1000),
+            'stages': trace, 'recent_instance_requests': recent,
+            'note': 'Read-only signed probe. No power or app commands. History is instance-local and may be empty.'}
+    return {'statusCode': 200, 'headers': {'Content-Type': 'application/json', 'Cache-Control': 'no-store'},
+            'body': json.dumps(body, ensure_ascii=False)}
+
+
+def handler(event, context):
+    if isinstance(event, dict) and event.get('httpMethod') == 'GET' and event.get('queryStringParameters', {}) and event['queryStringParameters'].get('wakemini_diag') == '1':
+        return _diagnostic(event)
+    trace = []
+    marker = _TRACE.set(trace)
+    started = time.perf_counter()
+    outcome = 'returned'
+    try:
+        result = _provider_handler(event, context)
+        if isinstance(result, dict) and 'statusCode' in result:
+            outcome = 'http_' + str(result['statusCode'])
+        return result
+    except Exception as exc:
+        outcome = _outcome(exc)
+        raise
+    finally:
+        _TRACE.reset(marker)
+        with _RECENT_LOCK:
+            _RECENT.append({'utc': time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime()),
+                            'outcome': outcome, 'ms': round((time.perf_counter() - started) * 1000), 'stages': trace})
