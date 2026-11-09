@@ -1,6 +1,7 @@
 const HOST = 'ru.wakemini.voice';
 let port = null, busy = false;
 let knownTab = null;
+let voiceSessionId = null;
 const restored = chrome.storage.session.get('knownTab').then(saved => { knownTab = saved.knownTab ?? null; });
 async function remember(id) { knownTab = id; await chrome.storage.session.set({knownTab: id}); return id; }
 const done = new Map();
@@ -35,6 +36,7 @@ async function handle(message) {
   if (done.has(message.id)) { port?.postMessage(done.get(message.id)); return; }
   if (busy) { port?.postMessage({id: message.id, ok: false, code: 'VOICE_OPERATION_BUSY'}); return; }
   busy = true;
+  if (message.action === 'start') voiceSessionId = message.id;
   const expires = Date.now() + 35000;
   let result;
   try {
@@ -78,3 +80,16 @@ function connect() {
 chrome.runtime.onStartup.addListener(connect);
 chrome.runtime.onInstalled.addListener(connect);
 connect();
+
+chrome.runtime.onMessage.addListener((message, sender) => {
+  if (sender.id !== chrome.runtime.id || sender.tab?.id !== knownTab ||
+      !sender.url?.startsWith('https://chatgpt.com/') || message?.type !== 'wakemini_voice_ended' ||
+      message.sessionId !== voiceSessionId || !voiceSessionId) return;
+  const sessionId = voiceSessionId; voiceSessionId = null;
+  port?.postMessage({event: 'voice_ended', sessionId});
+});
+chrome.tabs.onRemoved.addListener(tabId => {
+  if (tabId !== knownTab || !voiceSessionId) return;
+  const sessionId = voiceSessionId; voiceSessionId = null;
+  port?.postMessage({event: 'voice_ended', sessionId});
+});
