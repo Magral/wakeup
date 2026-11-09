@@ -25,7 +25,6 @@ COMMANDS = {
     APP_DEVICE_ID: 'LAUNCH',
     'wakemini-profile-work': 'PROFILE_WORK',
     'wakemini-profile-game': 'PROFILE_GAME',
-    'wakemini-profile-cinema': 'PROFILE_CINEMA',
 }
 LOG = logging.getLogger(__name__)
 _AUTH_CACHE = {}
@@ -149,7 +148,7 @@ def connect_agent(cfg, ip):
 
 
 def agent_command(cfg, command):
-    if command not in ('SHUTDOWN', 'RESTART', 'SLEEP', 'LAUNCH', 'CHATGPT', 'CHAT_END', 'PROFILE_WORK', 'PROFILE_GAME', 'PROFILE_CINEMA'):
+    if command not in ('SHUTDOWN', 'RESTART', 'SLEEP', 'LAUNCH', 'CHATGPT', 'CHAT_END', 'PROFILE_WORK', 'PROFILE_GAME'):
         raise ValueError('Unsupported agent command')
     ip = socket.gethostbyname(cfg['PC_HOST'])
     sock, nonce = connect_agent(cfg, ip)
@@ -232,7 +231,7 @@ def dispatch(event):
              'capabilities': [{'type': CAPABILITY, 'retrievable': False, 'reportable': False}],
              'device_info': info},
         ]}
-        for profile, title in [('work', 'Рабочий режим компьютера'), ('game', 'Игровой режим компьютера'), ('cinema', 'Кино на компьютере')]:
+        for profile, title in [('work', 'Рабочий режим компьютера'), ('game', 'Игровой режим компьютера')]:
             answer['payload']['devices'].append({
                 'id': 'wakemini-profile-' + profile, 'name': title, 'type': 'devices.types.other',
                 'description': 'Запуск локального профиля Windows',
@@ -240,7 +239,7 @@ def dispatch(event):
                 'device_info': info})
         answer['payload']['devices'].append({
             'id': CHAT_DEVICE_ID, 'name': 'Разговор с ChatGPT', 'type': 'devices.types.other',
-            'description': 'Подготовка LG, наушников и Chrome. Ход выполнения — в помощнике Windows; запуск голоса на странице вручную.',
+            'description': 'Запуск Chrome в фоне, подключение наушников и автоматический запуск голосового режима ChatGPT.',
             'capabilities': [{'type': CAPABILITY, 'retrievable': False, 'reportable': False}],
             'device_info': info})
         return answer
