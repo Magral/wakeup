@@ -24,7 +24,7 @@ internal static partial class Program
             if (!Version.TryParse(tag.TrimStart('v'), out var version)) throw new IOException("Некорректная версия релиза.");
             if (version <= new Version(current.Major, current.Minor, current.Build))
             { MessageBox.Show($"Установлена актуальная версия {current}.", "Wake Mini — обновление"); return; }
-            if (MessageBox.Show($"Доступна версия {version}. Сейчас установлена {current}.\n\nСкачать и установить? Помощник перезапустится. Ключ и настройки сохранятся. Предыдущую версию можно вернуть из меню.\n\nОписание: https://github.com/Magral/wakeup/releases/tag/" + tag,
+            if (MessageBox.Show($"Доступна версия {version}. Сейчас установлена {current}.\n\nСкачать и установить? Обновляется только Windows-помощник. Изменения облака и расширения смотрите в описании релиза. Помощник перезапустится. Ключ и настройки сохранятся. Предыдущую версию можно вернуть из меню.\n\nОписание: https://github.com/Magral/wakeup/releases/tag/" + tag,
                 "Wake Mini — обновление", MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes) return;
             using var progress = new Form { Text = "Wake Mini — обновление", Width = 440, Height = 125,
                 StartPosition = FormStartPosition.CenterScreen, ControlBox = false, FormBorderStyle = FormBorderStyle.FixedDialog };
