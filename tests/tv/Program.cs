@@ -83,7 +83,7 @@ try
         var manifest = body.GetProperty("manifest");
         Assert(!manifest.TryGetProperty("signed", out _) && !manifest.TryGetProperty("signatures", out _), "Legacy LG test signature must not be sent");
         var permissions = manifest.GetProperty("permissions").EnumerateArray().Select(x => x.GetString()).ToArray();
-        Assert(permissions.Contains("LAUNCH") && permissions.Contains("CONTROL_INPUT_TV"), "Required HDMI permissions missing");
+        Assert(permissions.Contains("LAUNCH") && permissions.Contains("CONTROL_INPUT_TV") && permissions.Contains("CONTROL_AUDIO"), "Required HDMI/audio permissions missing");
         if (paired) Assert(body.GetProperty("client-key").GetString() == "mock-client-key", "Wrong saved key");
         await Send(ws, new { type = "registered", payload = new Dictionary<string, string> { ["client-key"] = "mock-client-key" } });
     }
@@ -159,6 +159,31 @@ try
         else await Switch(ws, true);
     }, () => client.ShowPcAsync(token), connections: 2);
     Assert(wakes == 1 && sessions == 2, "A closing socket during boot was not retried exactly once");
+    await Scenario(async ws =>
+    {
+        await Register(ws, true);
+        var change = await Read(ws);
+        Assert(change.GetProperty("uri").GetString() == "ssap://com.webos.service.apiadapter/audio/changeSoundOutput", "Wrong audio method");
+        Assert(change.GetProperty("payload").GetProperty("output").GetString() == "tv_speaker", "Wrong audio output");
+        await Send(ws, new { id = change.GetProperty("id").GetString(), type = "response", payload = new { returnValue = true } });
+        var query = await Read(ws);
+        Assert(query.GetProperty("uri").GetString() == "ssap://com.webos.service.apiadapter/audio/getSoundOutput", "Output was not verified");
+        await Send(ws, new { id = query.GetProperty("id").GetString(), type = "response", payload = new { returnValue = true, soundOutput = "tv_speaker" } });
+    }, () => client.ReleaseBluetoothAudioAsync(token));
+
+    await Scenario(async ws =>
+    {
+        await Register(ws, true);
+        var change = await Read(ws);
+        await Send(ws, new { id = change.GetProperty("id").GetString(), type = "error", error = "403 access denied" });
+    }, () => Reject(() => client.ReleaseBluetoothAudioAsync(token), "Audio permission denial accepted"));
+
+    await Scenario(async ws =>
+    {
+        await Register(ws, true);
+        var change = await Read(ws);
+        await Send(ws, new { id = change.GetProperty("id").GetString(), type = "response", payload = new { returnValue = false } });
+    }, () => Reject(() => client.ReleaseBluetoothAudioAsync(token), "Audio output rejection accepted"));
     Assert(saves == 1, "Normal command rewrote pairing credentials");
 }
 finally { listener.Stop(); }

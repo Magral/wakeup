@@ -4,6 +4,7 @@ import socket
 import sys
 import threading
 import unittest
+from urllib.error import HTTPError, URLError
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -21,6 +22,7 @@ def event(value=True, kind='action'):
 
 class Tests(unittest.TestCase):
     def setUp(self):
+        main._AUTH_CACHE.clear()
         self.env = patch.dict(os.environ, ENV, clear=True)
         self.env.start()
         self.addCleanup(self.env.stop)
@@ -36,7 +38,7 @@ class Tests(unittest.TestCase):
                 self.assertEqual(packet, b'\xff' * 6 + bytes.fromhex('001122aabbcc') * 16)
 
     def test_commands_interoperate_over_real_udp(self):
-        for command in ('SHUTDOWN', 'RESTART', 'SLEEP', 'LAUNCH'):
+        for command in ('SHUTDOWN', 'RESTART', 'SLEEP', 'LAUNCH', 'CHATGPT'):
             failures = []
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server:
                 server.bind(('127.0.0.1', 0))
@@ -132,6 +134,47 @@ class Tests(unittest.TestCase):
             main.agent_command(cfg, 'SHUTDOWN')
             thread.join(); self.assertEqual(failures, [])
 
+    def test_delayed_probe_response_does_not_hide_command_ack(self):
+        failures = []
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as server:
+            server.bind(('127.0.0.1', 0)); server.settimeout(2)
+            cfg = main.settings() | {'port': server.getsockname()[1]}
+            def agent():
+                try:
+                    ping, remote = server.recvfrom(256)
+                    nonce = ping.decode().split('|')[2]
+                    def reply(verb):
+                        message = verb + '|' + nonce
+                        server.sendto(('WM1|' + message + '|' + main.sign(cfg['key'], message)).encode(), remote)
+                    reply('ONLINE')
+                    server.recvfrom(256)
+                    reply('ONLINE')  # Duplicated probe arrives during command wait.
+                    reply('SHUTDOWN_ACCEPTED')
+                except Exception as exc:
+                    failures.append(exc)
+            thread = threading.Thread(target=agent); thread.start()
+            try:
+                main.agent_command(cfg, 'SHUTDOWN')
+            finally:
+                thread.join()
+            self.assertEqual(failures, [])
+
+    @patch('main.authorize')
+    def test_wake_does_not_require_offline_agent_to_reply(self, auth):
+        with patch('main.socket.gethostbyname', return_value='127.0.0.1'), \
+             patch('main.socket.socket') as socket_factory, patch('main.connect_agent') as connect:
+            result = main.dispatch(event(True))
+            self.assertEqual(socket_factory.return_value.__enter__.return_value.sendto.call_count, 3)
+            connect.assert_not_called()
+            self.assertEqual(result['payload']['devices'][0]['capabilities'][0]['state']['action_result']['status'], 'DONE')
+
+    @patch('main.authorize')
+    def test_dns_failure_is_reported_without_success(self, auth):
+        with patch('main.socket.gethostbyname', side_effect=socket.gaierror()), patch('main.socket.socket') as udp:
+            result = main.dispatch(event(True))
+            udp.assert_not_called()
+            self.assertEqual(result['payload']['devices'][0]['capabilities'][0]['state']['action_result']['error_code'], 'DEVICE_UNREACHABLE')
+
     @patch('main.authorize')
     def test_on_and_off_are_separate(self, auth):
         with patch('main.power_on') as on, patch('main.power_off') as off:
@@ -159,6 +202,15 @@ class Tests(unittest.TestCase):
             with self.assertRaises(PermissionError): main.dispatch(event())
             on.assert_not_called()
 
+    @patch('main.authorize')
+    def test_chat_voice_can_start_and_stop_without_power_action(self, auth):
+        for value, command in ((True, 'CHATGPT'), (False, 'CHAT_END')):
+            request = event(value); request['payload']['devices'][0]['id'] = main.CHAT_DEVICE_ID
+            with patch('main.agent_command') as run, patch('main.power_on') as wake:
+                main.dispatch(request)
+                run.assert_called_once_with(main.settings(), command)
+                wake.assert_not_called()
+
     def test_checks_both_owner_and_oauth_client(self):
         for user in [{'id': 'other', 'login': 'other', 'client_id': 'client'}, {'id': '123', 'login': 'owner', 'client_id': 'other'}]:
             response = MagicMock()
@@ -181,6 +233,68 @@ class Tests(unittest.TestCase):
             self.assertEqual(main.authorize('Bearer cached-test-token', main.settings()), 'cached-user')
         open_url.assert_called_once()
 
+    def test_transient_identity_failure_recovers_before_wake(self):
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps(
+            {'id': '123', 'login': 'owner', 'client_id': 'client'})
+        for failure in (TimeoutError(), URLError('network'),
+                        HTTPError('https://login.yandex.ru/info', 503, 'Unavailable', {}, None)):
+            main._AUTH_CACHE.clear()
+            with patch('main.urlopen', side_effect=[failure, response]) as lookup, patch('main.power_on') as wake:
+                result = main.dispatch(event())
+                self.assertEqual(lookup.call_count, 2)
+                wake.assert_called_once()
+                self.assertEqual(result['payload']['devices'][0]['capabilities'][0]['state']['action_result']['status'], 'DONE')
+
+    def test_invalid_token_is_not_retried_or_allowed(self):
+        for code in (401, 403):
+            failure = HTTPError('https://login.yandex.ru/info', code, 'Denied', {}, None)
+            with patch('main.urlopen', side_effect=failure) as lookup, patch('main.power_on') as wake:
+                with self.assertRaises(PermissionError):
+                    main.dispatch(event())
+                lookup.assert_called_once()
+                wake.assert_not_called()
+
+    def test_identity_retry_uses_remaining_budget(self):
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps(
+            {'id': '123', 'login': 'owner', 'client_id': 'client'})
+        with patch('main.time.monotonic', side_effect=[0, 0, 0, 0.6, 0.8]), \
+             patch('main.urlopen', side_effect=[TimeoutError(), response]) as lookup:
+            self.assertEqual(main.authorize('Bearer test', main.settings()), '123')
+        self.assertAlmostEqual(lookup.call_args_list[0].kwargs['timeout'], 0.6)
+        self.assertAlmostEqual(lookup.call_args_list[1].kwargs['timeout'], 0.4)
+
+    def test_expired_identity_is_not_used_during_outage(self):
+        with patch('main.time.monotonic', return_value=0):
+            response = MagicMock()
+            response.__enter__.return_value.read.return_value = json.dumps(
+                {'id': '123', 'login': 'owner', 'client_id': 'client'})
+            with patch('main.urlopen', return_value=response):
+                main.authorize('Bearer test', main.settings())
+        with patch('main.time.monotonic', return_value=100), \
+             patch('main.urlopen', side_effect=TimeoutError()) as lookup, patch('main.power_on') as wake:
+            with self.assertRaises(PermissionError):
+                main.dispatch(event())
+            self.assertEqual(lookup.call_count, 2)
+            wake.assert_not_called()
+
+    def test_identity_retry_stops_when_budget_expires(self):
+        with patch('main.time.monotonic', side_effect=[0, 0, 0, 1.1]), \
+             patch('main.urlopen', side_effect=TimeoutError()) as lookup:
+            with self.assertRaises(PermissionError):
+                main.authorize('Bearer test', main.settings())
+            lookup.assert_called_once()
+
+    def test_retry_does_not_bypass_account_match(self):
+        response = MagicMock()
+        response.__enter__.return_value.read.return_value = json.dumps(
+            {'id': '999', 'login': 'someone-else', 'client_id': 'client'})
+        with patch('main.urlopen', side_effect=[TimeoutError(), response]), patch('main.power_on') as wake:
+            with self.assertRaises(PermissionError):
+                main.dispatch(event())
+            wake.assert_not_called()
+
     def test_bad_hmac_rejected(self):
         self.assertFalse(main.validate_reply(b'WM1|ONLINE|nonce|bad', 'ONLINE', 'nonce', bytes(32)))
 
@@ -197,7 +311,7 @@ class Tests(unittest.TestCase):
     @patch('main.authorize')
     def test_discovery_and_query_do_not_invent_power_state(self, auth):
         found = main.dispatch(event(kind='discovery'))['payload']['devices']
-        self.assertEqual([device['id'] for device in found], [main.DEVICE_ID, main.RESTART_DEVICE_ID, main.SLEEP_DEVICE_ID, main.APP_DEVICE_ID, 'wakemini-profile-work', 'wakemini-profile-game', 'wakemini-profile-cinema'])
+        self.assertEqual([device['id'] for device in found], [main.DEVICE_ID, main.RESTART_DEVICE_ID, main.SLEEP_DEVICE_ID, main.APP_DEVICE_ID, 'wakemini-profile-work', 'wakemini-profile-game', main.CHAT_DEVICE_ID])
         self.assertTrue(found[0]['capabilities'][0]['retrievable'])
         self.assertFalse(found[1]['capabilities'][0]['retrievable'])
         with patch('main.power_state', return_value=True):

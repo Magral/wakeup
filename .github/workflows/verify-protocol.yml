@@ -12,6 +12,8 @@ jobs:
           dotnet-version: '8.0.x'
       - run: dotnet run --project tests/protocol/ProtocolTests.csproj
       - run: dotnet run --project tests/tv/TvTests.csproj
+      - run: dotnet run --project tests/chat/ChatTests.csproj
+      - run: node --test tests/chat/voice-*.test.js
       - run: python -m unittest discover -s alice-cloud/tests -v
   windows-agent:
     runs-on: windows-latest
@@ -26,6 +28,8 @@ jobs:
           dotnet build tests/protocol/ProtocolTests.csproj -c Release -r win-x64 -o publish/test-counter
       - name: Verify duplicate UDP requests never launch twice
         run: python tests/integration_agent.py publish/test-agent/WakeMiniAgent.exe publish/test-counter/ProtocolTests.exe
+      - name: Verify chat sequencing and real native-host stdio on Windows
+        run: dotnet run --project tests/chat/ChatTests.csproj -- publish/test-agent/WakeMiniAgent.exe
       - name: Parse Windows signing setup script
         shell: pwsh
         run: |
@@ -33,3 +37,38 @@ jobs:
           $errors = $null
           [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'scripts/Setup-WakeMini-Signing.ps1'), [ref]$tokens, [ref]$errors) | Out-Null
           if ($errors.Count) { $errors | Format-List; exit 1 }
+      - name: Publish self-contained 1.5.5 helper
+        run: dotnet publish pc-agent/WakeMiniAgent.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish/package
+      - name: Package tested 1.5.5 release
+        run: python scripts/package-preview.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: WakeMini-1.5.5
+          path: |
+            publish/bundle/WakeMini-1.5.5.zip
+            publish/bundle/WakeMini-Alice-Cloud-1.5.4.zip
+            publish/bundle/SHA256SUMS.txt
+          if-no-files-found: error
+
+  release:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    needs: [protocol, windows-agent]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: WakeMini-1.5.5
+          path: release
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.5.5
+          name: Wake Mini 1.5.5
+          target_commitish: ${{ github.sha }}
+          body_path: docs/UPDATE-1.5.5.md
+          files: release/*
+          fail_on_unmatched_files: true
+          prerelease: false
+          make_latest: true

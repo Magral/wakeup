@@ -1,4 +1,5 @@
 """Exercise the real Windows agent; only launches our harmless counter, never powers off."""
+import contextlib
 import hashlib
 import hmac
 import json
@@ -26,18 +27,43 @@ with tempfile.TemporaryDirectory() as temp:
     (agent.parent / 'wake-actions.json').write_text(json.dumps(settings))
     process = subprocess.Popen([str(agent)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     try:
-        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as client:
-            client.connect(('127.0.0.1', 3000)); client.settimeout(0.5)
-            for _ in range(30):
+        with contextlib.ExitStack() as sockets:
+            # A hosted Windows runner can take several seconds to start WinForms
+            # and load .NET. Keep startup tolerance separate from UDP ACK timing.
+            startup_deadline = time.monotonic() + 25
+            while time.monotonic() < startup_deadline:
+                if process.poll() is not None:
+                    raise AssertionError('Agent exited during startup: ' + str(process.returncode))
+                # A fresh socket per startup probe avoids queued Windows ICMP
+                # errors or delayed replies from a probe sent before bind.
+                client = sockets.enter_context(socket.socket(socket.AF_INET, socket.SOCK_DGRAM))
+                client.connect(('127.0.0.1', 3000)); client.settimeout(0.5)
                 nonce = secrets.token_hex(16)
                 client.send(('WM1|PING|' + nonce).encode())
                 try:
                     reply = client.recv(256)
                     if reply == signed('ONLINE', nonce): break
                 except (socket.timeout, ConnectionRefusedError, ConnectionResetError): pass
+                client.close()
                 time.sleep(0.1)
-            else: raise AssertionError('Agent did not answer a signed probe')
+            else:
+                log = agent.parent / 'WakeMiniAgent.log'
+                detail = log.read_text(errors='replace')[-2000:] if log.exists() else 'No agent log created'
+                raise AssertionError('Agent did not answer a signed probe within 25 seconds. ' + detail)
             packet = signed('PROFILE_WORK', nonce)
+            # A replay arriving from another source must neither execute nor
+            # consume the original sender's pending challenge.
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as stranger:
+                stranger.connect(('127.0.0.1', 3000)); stranger.settimeout(0.2)
+                stranger.send(packet)
+                try:
+                    stranger.recv(256)
+                    raise AssertionError('Command accepted from a different endpoint')
+                except socket.timeout: pass
+            # Malformed and oversized packets must not disturb a valid session.
+            client.send(b'WM1|junk')
+            client.send(b'x' * 1024)
+            client.send(signed('PROFILE_WORK', nonce)[:-1] + b'z')
             client.send(packet)
             # Simulate a sender recovering a missing acknowledgement by sending identical bytes.
             client.send(packet)
@@ -65,6 +91,15 @@ with tempfile.TemporaryDirectory() as temp:
                 assert client.recv(256) == signed(expected, token), command
                 client.send(request)
                 assert client.recv(256) == signed(expected, token), 'TV acknowledgement retry failed'
+            for command, expected in [('CHAT_STATUS', 'CHAT_STATUS_IDLE'), ('CHATGPT', 'CHATGPT_NOT_CONFIGURED'), ('CHAT_END', 'CHAT_END_NOT_CONFIGURED'), ('CHAT_CANCEL', 'CHAT_CANCEL_ACCEPTED')]:
+                token = secrets.token_hex(16)
+                client.send(('WM1|PING|' + token).encode())
+                assert client.recv(256) == signed('ONLINE', token)
+                request = signed(command, token)
+                client.send(request)
+                assert client.recv(256) == signed(expected, token), command
+                client.send(request)
+                assert client.recv(256) == signed(expected, token), 'Chat acknowledgement retry failed'
         print('Real Windows agent: signed probe, duplicate acknowledgements, single execution and endpoint binding passed.')
     finally:
         process.terminate()

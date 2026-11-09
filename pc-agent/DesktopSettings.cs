@@ -90,6 +90,8 @@ internal static partial class Program
         lock (TvLock) tv = TvMessage;
         var text = "Wake Mini " + typeof(Program).Assembly.GetName().Version + "\r\nUDP-порт: 3000\r\nIP: " + string.Join(", ", addresses)
             + "\r\nLG TV: " + tv
+            + "\r\nРабота / Игры: " + DesktopMessage
+            + "\r\nChatGPT: " + ConversationDiagnostic()
             + "\r\nПоследняя принятая команда: " + (LastRequest?.ToString() ?? "ещё нет")
             + "\r\n\r\n" + (File.Exists(log) ? string.Join("\r\n", File.ReadLines(log).TakeLast(40)) : "Журнал пока пуст.");
         var pair = SettingsWindow("диагностика"); using var form = pair.Form;
@@ -102,8 +104,10 @@ internal static partial class Program
     {
         var settings = ReadSettings(directory);
         var pair = SettingsWindow("профили запуска"); using var form = pair.Form;
+        var modes = Row(pair.Grid, new CheckBox { Text = "Работа — Chrome, Игры — Steam Big Picture (переключать окна)", AutoSize = true, Checked = settings.UseDesktopModes });
+        Row(pair.Grid, new Label { AutoSize = true, MaximumSize = new(700, 0), Text = "Выберите Chrome для Работы и steam.exe для Игр. В режиме переключения параметры запуска этих двух профилей не используются. Автозапуск Windows не меняется." });
         var inputs = new Dictionary<string, (TextBox Path, TextBox Args)>();
-        foreach (var (id, title) in new[] { ("work", "Работа"), ("game", "Игры"), ("cinema", "Кино") })
+        foreach (var (id, title) in new[] { ("work", "Работа"), ("game", "Игры") })
         {
             var profile = settings.Profiles.GetValueOrDefault(id);
             var path = Field(pair.Grid, title + " — программа (.exe)", profile?.Path);
@@ -112,6 +116,8 @@ internal static partial class Program
             inputs[id] = (path, Field(pair.Grid, "Параметры запуска", profile?.Arguments));
         }
         var save = Row(pair.Grid, new Button { Text = "Сохранить профили", AutoSize = true });
+        var detect = Row(pair.Grid, new Button { Text = "Заполнить Chrome и Steam автоматически", AutoSize = true });
+        detect.Click += (_, _) => { inputs["work"].Path.Text = DetectChrome(); inputs["game"].Path.Text = DetectSteam(); modes.Checked = true; };
         save.Click += (_, _) =>
         {
             foreach (var input in inputs.Values)
@@ -119,6 +125,7 @@ internal static partial class Program
                     || !input.Path.Text.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)))
                 { MessageBox.Show("Выберите существующий файл .exe или оставьте профиль пустым."); return; }
             foreach (var (id, input) in inputs) settings.Profiles[id] = new LaunchProfile { Path = input.Path.Text, Arguments = input.Args.Text };
+            settings.UseDesktopModes = modes.Checked;
             try { SaveSettings(directory, settings); form.Close(); } catch (Exception ex) { MessageBox.Show(ex.Message); }
         };
         form.ShowDialog();
