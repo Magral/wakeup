@@ -53,6 +53,7 @@ internal static partial class Program
                 Log(baseDirectory, "Автовозврат звука: " + result); return;
             }
         });
+        _ = RunSteamCloudAsync(baseDirectory, key, stop.Token);
         var voiceBridgeTask = VoiceBridge.RunServerAsync(stop.Token);
         using var tray = new AgentTrayContext(baseDirectory);
         Application.Run(tray);
@@ -156,7 +157,8 @@ internal static partial class Program
                 if (!Challenges.TryRemove(nonce, out _)) return;
                 LastRequest = DateTime.Now;
                 string verb;
-                if (command == "TV_PC") verb = StartTv(baseDirectory);
+                if (command == "TV_HDMI1" || command == "TV_HDMI2") verb = StartTv(baseDirectory, command == "TV_HDMI1" ? 1 : 2);
+                else if (command == "TV_PC") verb = StartTv(baseDirectory);
                 else if (command == "SOUND_TV") verb = ReturnSoundToTv(baseDirectory);
                 else if (command == "CHATGPT") verb = StartConversation(baseDirectory);
                 else if (command == "CHAT_END") verb = StopBackgroundConversation(baseDirectory);
@@ -265,7 +267,7 @@ internal static partial class Program
     private static bool IsNonce(string value) => value.Length == 32 && value.All(Uri.IsHexDigit);
 
     private static bool IsAllowedCommand(string command) =>
-        command is "SOUND_TV" or "CHATGPT" or "CHAT_END" or "CHAT_STATUS" or "CHAT_CANCEL" or "TV_PC" or "TV_STATUS" or "TV_CANCEL" or "SHUTDOWN" or "RESTART" or "SLEEP" or "LAUNCH" or "PROFILE_WORK" or "PROFILE_GAME";
+        command is "TV_HDMI1" or "TV_HDMI2" or "SOUND_TV" or "CHATGPT" or "CHAT_END" or "CHAT_STATUS" or "CHAT_CANCEL" or "TV_PC" or "TV_STATUS" or "TV_CANCEL" or "SHUTDOWN" or "RESTART" or "SLEEP" or "LAUNCH" or "PROFILE_WORK" or "PROFILE_GAME";
 
     private static string SignedReply(byte[] key, string verb, string nonce) =>
         $"WM1|{verb}|{nonce}|{Sign(key, $"{verb}|{nonce}")}";
@@ -377,6 +379,9 @@ internal static partial class Program
             startup.CheckedChanged += (_, _) => { try { SetStartup(startup.Checked); } catch (Exception ex) { MessageBox.Show(ex.Message, "Wake Mini"); } };
             menu.Items.Add(startup);
             menu.Items.Add(new ToolStripMenuItem("Подключить телефон / QR…", null, (_, _) => ConfigurePhone(_baseDirectory)));
+            menu.Items.Add(new ToolStripMenuItem("Steam: библиотека и облако…", null, (_, _) => ConfigureSteam(_baseDirectory)));
+            menu.Items.Add(new ToolStripMenuItem("LG: HDMI 1 — ПК", null, (_, _) => StartTv(_baseDirectory, 1)));
+            menu.Items.Add(new ToolStripMenuItem("LG: HDMI 2 — приставка", null, (_, _) => StartTv(_baseDirectory, 2)));
             menu.Items.Add(new ToolStripMenuItem("Телевизор LG OLED…", null, (_, _) => ConfigureTv(_baseDirectory)));
             menu.Items.Add(new ToolStripMenuItem("Состояние и диагностика…", null, (_, _) => ShowDiagnostics(_baseDirectory)));
             menu.Items.Add(new ToolStripMenuItem("Профили: Работа / Игры…", null, (_, _) => ConfigureProfiles(_baseDirectory)));
