@@ -21,19 +21,21 @@ internal static partial class Program
         try { File.SetAttributes(path, File.GetAttributes(path) | FileAttributes.Hidden); } catch { }
     }
 
-    private static string StartTv(string directory)
+    private static string StartTv(string directory, int? input = null)
     {
+        var verb = input.HasValue ? "TV_HDMI" + input.Value : "TV_PC";
         lock (TvLock)
         {
-            if (TvOperation != null || ChatOperation != null) return "TV_PC_BUSY";
+            if (TvOperation != null || ChatOperation != null || Volatile.Read(ref DesktopBusy) != 0) return verb + "_BUSY";
             LgTvSettings settings;
             try
             {
                 settings = ReadTvSettings(directory);
+                if (input.HasValue) settings.Hdmi = input.Value;
                 settings.Validate();
-                if (string.IsNullOrWhiteSpace(settings.ClientKey)) return "TV_PC_NOT_CONFIGURED";
+                if (string.IsNullOrWhiteSpace(settings.ClientKey)) return verb + "_NOT_CONFIGURED";
             }
-            catch { return "TV_PC_NOT_CONFIGURED"; }
+            catch { return verb + "_NOT_CONFIGURED"; }
             var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(65));
             TvOperation = cancellation;
             TvState = "BUSY";
@@ -57,7 +59,7 @@ internal static partial class Program
                 }
                 Log(directory, "LG TV: " + message);
             });
-            return "TV_PC_ACCEPTED";
+            return verb + "_ACCEPTED";
         }
     }
 
