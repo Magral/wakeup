@@ -41,15 +41,15 @@ jobs:
           if ($errors.Count) { $errors | Format-List; exit 1 }
       - name: Verify updater installation, rollback and locked-file recovery
         run: python tests/update/test_installer.py
-      - name: Publish self-contained 1.7.0 helper
+      - name: Publish self-contained 1.7.1 helper
         run: dotnet publish pc-agent/WakeMiniAgent.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o publish/package
-      - name: Package tested 1.7.0 release
+      - name: Package tested 1.7.1 release
         run: python scripts/package-preview.py
       - uses: actions/upload-artifact@v4
         with:
-          name: WakeMini-1.7.0
+          name: WakeMini-1.7.1
           path: |
-            publish/bundle/WakeMini-1.7.0.zip
+            publish/bundle/WakeMini-1.7.1.zip
             publish/bundle/WakeMini-Alice-Cloud-1.7.0.zip
             publish/bundle/SHA256SUMS.txt
           if-no-files-found: error
@@ -64,14 +64,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: WakeMini-1.7.0
+          name: WakeMini-1.7.1
           path: release
       - uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.7.0
-          name: Wake Mini 1.7.0
+          tag_name: v1.7.1
+          name: Wake Mini 1.7.1
           target_commitish: ${{ github.sha }}
-          body_path: docs/UPDATE-1.7.0.md
+          body_path: docs/UPDATE-1.7.1.md
           files: release/*
           fail_on_unmatched_files: true
           prerelease: false
