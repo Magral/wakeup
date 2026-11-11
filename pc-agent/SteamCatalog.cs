@@ -1,6 +1,6 @@
 using System.Text.RegularExpressions;
 
-internal sealed record SteamGame(string AppId, string Name, string Directory);
+internal sealed record SteamGame(string AppId, string Name, string Directory, string ManifestPath = "");
 internal static class SteamCatalog
 {
     // Valve KeyValues: quoted strings, escaped quotes/backslashes, braces and comments.
@@ -58,7 +58,7 @@ internal static class SteamCatalog
                     var common = Path.GetFullPath(Path.Combine(apps, "common")) + Path.DirectorySeparatorChar;
                     var path = Path.GetFullPath(Path.Combine(common, installed));
                     if (!path.StartsWith(common, StringComparison.OrdinalIgnoreCase) || !System.IO.Directory.Exists(path)) continue;
-                    result[id] = new(id, name, path);
+                    result[id] = new(id, name, path, file);
                 }
                 catch (Exception ex) when (ex is IOException or FormatException or ArgumentException or UnauthorizedAccessException) { }
             }
