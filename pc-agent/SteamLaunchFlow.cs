@@ -26,11 +26,13 @@ internal static class SteamLaunchFlow
                 {
                     // Steam may auto-launch after updating. Inspect again immediately
                     // before the one allowed retry to avoid launching a running app.
-                    if (!inspect().Running)
+                    if (inspect().Running)
                     {
-                        launch(); retried = true;
-                        progress("Обновление завершено. Повторный запрос запуска отправлен один раз.");
+                        progress("Steam самостоятельно запустил игру после обновления.");
+                        return "launch_requested";
                     }
+                    launch(); retried = true;
+                    progress("Обновление завершено. Повторный запрос запуска отправлен один раз.");
                 }
             }
             else if (!state.Ready) readySamples = 0;
