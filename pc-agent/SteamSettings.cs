@@ -12,6 +12,7 @@ internal static partial class Program
         public string SteamPath { get; set; } = "";
         public string CloudUrl { get; set; } = "";
     }
+    private static string SteamLaunchMessage = "";
     private static string SteamMessage = "Steam: облачная связь не настроена.";
     private static string SteamPath(string directory) => Path.Combine(directory, "wake-steam.json");
     private static SteamSettings ReadSteamSettings(string directory) => File.Exists(SteamPath(directory))
@@ -95,13 +96,48 @@ internal static partial class Program
                     using var next = await SteamRequest(http, settings, key, "next", new {}, token);
                     if (next.RootElement.TryGetProperty("job", out var job) && job.ValueKind == JsonValueKind.Object)
                         await ExecuteSteamJob(directory, settings, key, http, games, job, token);
-                    else SteamMessage = $"Steam: связь с облаком есть; установлено игр: {games.Count}.";
+                    else SteamMessage = $"Steam: связь с облаком есть; установлено игр: {games.Count}. " + SteamLaunchMessage;
                 }
             }
             catch (OperationCanceledException) when (token.IsCancellationRequested) { return; }
             catch (Exception ex) { SteamMessage = "Steam: " + ex.Message; }
             try { await Task.Delay(5000, token); } catch (OperationCanceledException) { return; }
         }
+    }
+    private static bool IsSteamGameRunning(SteamGame game)
+    {
+        foreach (var process in Process.GetProcesses())
+            using (process) { try {
+                var exe = process.MainModule?.FileName;
+                if (exe != null && exe.StartsWith(game.Directory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) return true;
+            } catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or NotSupportedException) {} }
+        return false;
+    }
+    private static void FocusSteamGame(SteamGame game)
+    {
+        foreach (var process in Process.GetProcesses())
+            using (process) { try {
+                var exe = process.MainModule?.FileName;
+                if (exe != null && exe.StartsWith(game.Directory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) {
+                    BringProgramForward(process.ProcessName); return;
+                }
+            } catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or NotSupportedException) {} }
+    }
+    private static SteamLaunchState InspectSteamLaunch(SteamGame game)
+    {
+        if (IsSteamGameRunning(game)) return new(true, false, false);
+        try
+        {
+            if (SteamCatalog.Parse(File.ReadAllText(game.ManifestPath)).GetValueOrDefault("AppState") is not Dictionary<string, object> state)
+                return new(false, false, false);
+            if (!uint.TryParse(state.GetValueOrDefault("StateFlags") as string, out var flags)) return new(false, false, false);
+            // Read-only interpretation of Steam's appmanifest state flags.
+            // Never edit manifests, disable updates or bypass Steam prompts.
+            const uint updates = 2 | 256 | 512 | 1024 | 65536 | 131072 | 262144 | 524288 | 1048576 | 2097152 | 4194304 | 8388608;
+            var updating = (flags & updates) != 0;
+            return new((flags & 8192) != 0, (flags & 4) != 0 && !updating, updating, state.GetValueOrDefault("buildid") as string ?? "");
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or FormatException) { return new(false, false, false); }
     }
     private static async Task ExecuteSteamJob(string directory, SteamSettings settings, byte[] key, HttpClient http, IReadOnlyList<SteamGame> games, JsonElement job, CancellationToken token)
     {
@@ -124,28 +160,49 @@ internal static partial class Program
                 while (ledger.Count > 256) ledger.Remove(ledger.Keys.First());
                 File.WriteAllText(ledgerPath + ".tmp", JsonSerializer.Serialize(ledger)); File.Move(ledgerPath + ".tmp", ledgerPath, true);
             }
+            var ownsDesktop = true;
             try
             {
                 // Persist before side effects. An interrupted command is reported, never replayed.
                 ledger[id] = "interrupted"; Save();
                 var tv = ReadTvSettings(directory); tv.Hdmi = 1; tv.Validate();
                 await new LgWebOsClient(tv, _ => {}).ShowPcAsync(token);
-                var existing = false;
-                foreach (var process in Process.GetProcesses())
-                    using (process) { try {
-                        var exe = process.MainModule?.FileName;
-                        if (exe != null && exe.StartsWith(game.Directory + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) {
-                            existing = true; BringProgramForward(process.ProcessName); break;
-                        }
-                    } catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException or NotSupportedException) {} }
-                if (!existing) Process.Start(new ProcessStartInfo(settings.SteamPath, "steam://rungameid/" + game.AppId) {UseShellExecute = true});
-                result = existing ? "already_running" : "launch_requested";
+                // Explicit Big Picture request also switches an already-running
+                // desktop Steam client; a startup preference alone does not.
+                if (!IsProgramRunning("steam"))
+                    Process.Start(new ProcessStartInfo(settings.SteamPath, "-bigpicture") {UseShellExecute = true});
+                for (var wait = 0; wait < 60 && !HasProgramWindow("steam") && !HasProgramWindow("steamwebhelper"); wait++)
+                    await Task.Delay(500, token);
+                Process.Start(new ProcessStartInfo(settings.SteamPath, "steam://open/bigpicture") {UseShellExecute = true});
+                SteamLaunchMessage = game.Name + ": открываю Big Picture…"; SteamMessage = SteamLaunchMessage;
+                await Task.Delay(2500, token);
+                BringProgramForward("steam", "steamwebhelper");
+                if (IsSteamGameRunning(game))
+                {
+                    FocusSteamGame(game);
+                    result = "already_running";
+                    SteamLaunchMessage = game.Name + ": игра уже работает; повторный запуск не отправлялся.";
+                }
+                else
+                {
+                    void Launch() => Process.Start(new ProcessStartInfo(settings.SteamPath, "steam://rungameid/" + game.AppId) {UseShellExecute = true});
+                    var initial = InspectSteamLaunch(game);
+                    Launch();
+                    // Downloading can take minutes. Release desktop switching so
+                    // Work/HDMI/Atlas continue working during the observation.
+                    Interlocked.Exchange(ref DesktopBusy, 0); ownsDesktop = false;
+                    var lastProgress = "";
+                    result = await SteamLaunchFlow.MonitorAsync(() => InspectSteamLaunch(game), Launch, message => {
+                        SteamLaunchMessage = game.Name + ": " + message; SteamMessage = SteamLaunchMessage;
+                        if (message != lastProgress) { Log(directory, "Steam: " + SteamLaunchMessage); lastProgress = message; }
+                    }, ct => Task.Delay(2000, ct), 600, token, initial);
+                }
             }
             catch (Exception ex) { result = "failed"; Log(directory, "Steam: " + ex.Message); }
-            finally { Interlocked.Exchange(ref DesktopBusy, 0); }
+            finally { if (ownsDesktop) Interlocked.Exchange(ref DesktopBusy, 0); }
             ledger[id] = result!; Save();
         }
         using var ack = await SteamRequest(http, settings, key, "result", new {id, result}, token);
-        SteamMessage = "Steam: " + game.Name + " — " + result; Log(directory, SteamMessage);
+        SteamMessage = "Steam: " + game.Name + " — " + result + ". " + SteamLaunchMessage; Log(directory, SteamMessage);
     }
 }
