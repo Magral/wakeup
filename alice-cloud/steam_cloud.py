@@ -8,6 +8,7 @@ import re
 import time
 import unicodedata
 from difflib import SequenceMatcher
+from functools import lru_cache
 
 
 class Store:
@@ -39,24 +40,93 @@ def normalized(text):
     return ' '.join(re.findall(r'\w+', unicodedata.normalize('NFKC', text).casefold().replace('ё', 'е')))
 
 
-def matches(text, games):
+def game_query(text):
     query = normalized(text)
-    query = re.sub(r'^(?:запусти|включи|игру|игра|пожалуйста)\s+', '', query)
+    # Remove a whole command prefix, not just its first word.
+    return re.sub(r'^(?:(?:запусти|запускай|включи|открой|игру|игра|пожалуйста)(?:\s+|$))+', '', query)
+
+
+@lru_cache(maxsize=8192)
+def pronunciation(text):
+    """Approximate bilingual sound key, used ONLY to propose confirmed choices.
+
+    This is not an English pronunciation dictionary or a semantic translator.
+    Keep digits so numbered sequels remain distinguishable.
+    """
+    roman = {'ii': '2', 'iii': '3', 'iv': '4', 'v': '5', 'vi': '6',
+             'vii': '7', 'viii': '8', 'ix': '9', 'x': '10'}
+    text = ' '.join(roman.get(word, word) for word in normalized(text).split())
+    translit = dict(zip('абвгдежзийклмнопрстуфхцчшщъыьэюя',
+                        ('a', 'b', 'v', 'g', 'd', 'e', 'zh', 'z', 'i', 'i',
+                         'k', 'l', 'm', 'n', 'o', 'p', 'r', 's', 't', 'u',
+                         'f', 'kh', 'ts', 'ch', 'sh', 'sh', '', 'i', '', 'e', 'yu', 'ya')))
+    text = ''.join(translit.get(char, char) for char in text)
+    # Digraphs first; then merge common ASR spelling and vowel variations.
+    for pattern, replacement in ((r'ph', 'f'), (r'th', 't'), (r'ck|qu', 'k'),
+                                  (r'wh', 'v'), (r'sch|sh|zh', 'S'),
+                                  (r'tch|ch', 'C'), (r'kh', 'h'),
+                                  (r'c(?=[eiy])', 's'), (r'c|q', 'k'),
+                                  (r'w', 'v'), (r'x', 'ks'), (r'j', 'S'),
+                                  (r'[aeiouy]+', 'a')):
+        text = re.sub(pattern, replacement, text)
+    text = re.sub(r'[^a-zA-Z0-9]', '', text)
+    return re.sub(r'([a-zA-Z])\1+', r'\1', text)
+
+
+def matches(text, games, learned_aliases=None):
+    query = game_query(text)
+    if not query:
+        return [], False
     aliases = json.loads(os.environ.get('STEAM_ALIASES', '{}'))
+    spoken = pronunciation(query)
     scores = []
     for game in games:
-        names = [game['name'], *aliases.get(game['appid'], [])]
+        names = [game['name'], *aliases.get(game['appid'], []),
+                 *(learned_aliases or {}).get(game['appid'], [])]
         if game['appid'] == '275850':
             names += ['ноу мэнс скай', 'ноу менс скай', 'номанс скай']
         values = [normalized(name) for name in names]
+        numbers = re.findall(r'\d+', spoken)
+        if numbers:
+            values = [value for value in values if re.findall(r'\d+', pronunciation(value)) == numbers]
+        if not values:
+            continue
         exact = query in values
         score = 1 if exact else max((SequenceMatcher(None, query, v).ratio() for v in values), default=0)
-        if exact or score >= .55 or any(len(query) >= 3 and query in v for v in values):
+        literal = score >= .55 or any(len(query) >= 3 and query in v for v in values)
+        phonetic = 0
+        if len(spoken) >= 3:
+            for value in values:
+                sound = pronunciation(value)
+                # A stated sequel number must not match a different sequel.
+                similarity = SequenceMatcher(None, spoken, sound).ratio()
+                if sound.startswith(spoken):
+                    similarity = max(similarity, .85)
+                initials = ''.join(word[0] for word in value.split() if word)
+                if len(query) >= 3 and query.replace(' ', '') == initials:
+                    similarity = max(similarity, .9)
+                if similarity >= .72:
+                    phonetic = max(phonetic, similarity * .95)
+        if exact or literal or phonetic:
+            score = max(score if literal else 0, phonetic)
             scores.append((exact, score, game))
     scores.sort(key=lambda x: (x[0], x[1]), reverse=True)
     if scores and scores[0][0]:
         return [x[2] for x in scores if x[0]][:5], True
     return [x[2] for x in scores[:5]], False
+
+
+def remember_alias(store, aliases, appid, query):
+    query = game_query(query)
+    if not 3 <= len(query) <= 128:
+        return
+    # Bounded below Store's 1 MiB read limit, even with multibyte text.
+    if appid not in aliases and len(aliases) >= 128:
+        return
+    values = aliases.setdefault(appid, [])
+    if query not in values:
+        aliases[appid] = (values + [query])[-8:]
+        store.put('spoken-aliases.json', aliases)
 
 
 def agent(event, cfg, store):
@@ -113,30 +183,38 @@ def dialog(event, cfg, store, authorize, wake):
         return {'version': '1.0', 'response': {'text': text, 'end_session': end}, 'session_state': state or {}}
     if normalized(command) in ('отмена', 'хватит', 'выход', 'стоп'):
         return say('Запуск отменён.', end=True)
-    if not command or event.get('session', {}).get('new'):
+    if not command or normalized(command) in ('стим', 'steam'):
         return say('Какую игру запустить?')
     catalog = store.get('catalog.json', {'games': []})
     games = catalog.get('games', [])
     if not games:
         return say('Список игр пока пуст. Включите компьютер и настройте синхронизацию Steam в Wake Mini.')
     selected = None
+    learned_aliases = store.get('spoken-aliases.json', {})
+    confirmed_query = None
     choices = state.get('choices', [])
     words = {'один': 1, 'первую': 1, 'два': 2, 'вторую': 2, 'три': 3, 'третью': 3, 'четыре': 4, 'пять': 5}
     number = words.get(normalized(command), int(command) if command.isdigit() else 0)
     if choices and 1 <= number <= len(choices):
         selected = next((g for g in games if g['appid'] == choices[number - 1]), None)
+        confirmed_query = state.get('choices_query')
     elif state.get('confirm') and normalized(command) in ('да', 'верно', 'запускай'):
         selected = next((g for g in games if g['appid'] == state['confirm']), None)
+        confirmed_query = state.get('confirm_query')
+    elif (choices or state.get('confirm')) and normalized(command) in ('нет', 'неверно', 'не та'):
+        return say('Назовите игру иначе. Можно сказать полное название.')
     if selected is None:
-        found, exact = matches(command, games)
+        found, exact = matches(command, games, learned_aliases)
         if not found:
-            return say('Не нашёл такую установленную игру. Назовите её иначе.')
+            return say('Не удалось сопоставить название со списком игр. Назовите игру иначе; если она установлена недавно, обновите список Steam в Wake Mini.')
         if len(found) == 1 and exact:
             selected = found[0]
         elif len(found) == 1:
-            return say('Запустить ' + found[0]['name'] + '?', {'confirm': found[0]['appid']})
+            return say('Запустить ' + found[0]['name'] + '?', {'confirm': found[0]['appid'], 'confirm_query': game_query(command)})
         else:
-            return say('Нашёл несколько игр. ' + '. '.join(str(i + 1) + ': ' + g['name'] for i, g in enumerate(found)) + '. Назовите номер.', {'choices': [g['appid'] for g in found]})
+            return say('Нашёл несколько игр. ' + '. '.join(str(i + 1) + ': ' + g['name'] for i, g in enumerate(found)) + '. Назовите номер.', {'choices': [g['appid'] for g in found], 'choices_query': game_query(command)})
+    if confirmed_query:
+        remember_alias(store, learned_aliases, selected['appid'], confirmed_query)
     # Stable ID for a redelivered Alice message; repeated delivery never creates a second launch.
     session = event['session']
     jobid = hashlib.sha256((session['session_id'] + ':' + str(session['message_id'])).encode()).hexdigest()[:32]
