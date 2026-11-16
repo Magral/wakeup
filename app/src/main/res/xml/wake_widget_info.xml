@@ -1,8 +1,10 @@
 <appwidget-provider xmlns:android="http://schemas.android.com/apk/res/android"
-    android:minWidth="112dp"
-    android:minHeight="112dp"
+    android:minWidth="40dp" android:minHeight="40dp"
+    android:minResizeWidth="40dp" android:minResizeHeight="40dp"
+    android:targetCellWidth="1" android:targetCellHeight="1"
     android:updatePeriodMillis="0"
     android:initialLayout="@layout/wake_widget"
+    android:previewLayout="@layout/wake_widget"
     android:resizeMode="horizontal|vertical"
     android:widgetCategory="home_screen"
     android:description="@string/wake_widget_description" />
