@@ -90,6 +90,7 @@ internal static partial class Program
             {
                 void Progress(string message) { lock (TvLock) ChatMessage = message; }
                 string state, message;
+                var ownsDucking = false;
                 try
                 {
                     async Task ReleaseTv(CancellationToken token)
@@ -118,6 +119,11 @@ internal static partial class Program
                                 if (settings.BackgroundVoice)
                                 {
                                     await EnsureVoiceExtensionAsync(settings.ChromePath, token);
+                                    var steam = ReadSteamSettings(directory).SteamPath;
+                                    if (string.IsNullOrWhiteSpace(steam)) steam = DetectSteam();
+                                    var roots = string.IsNullOrWhiteSpace(steam) ? Array.Empty<string>()
+                                        : SteamCatalog.Scan(Path.GetDirectoryName(steam)!).Select(game => game.Directory).ToArray();
+                                    ownsDucking = GameDucking?.Begin(roots) ?? false;
                                     await VoiceBridge.SendAsync("start", token);
                                 }
                                 else
@@ -136,6 +142,7 @@ internal static partial class Program
                 }
                 catch (OperationCanceledException) { state = "FAILED"; message = "Подготовка отменена или истекло время ожидания. Уже выполненное переключение звука LG не отменяется."; }
                 catch (Exception ex) { state = "FAILED"; message = "Подготовка не завершена: " + ex.Message; }
+                if (state == "FAILED" && ownsDucking) GameDucking?.End();
                 lock (TvLock)
                 {
                     ChatState = state; ChatMessage = message;
@@ -170,6 +177,7 @@ internal static partial class Program
                     await Task.Delay(100, stop.Token);
                 }
                 await VoiceBridge.SendAsync("stop", stop.Token);
+                GameDucking?.End();
                 lock (TvLock) { ChatState = "IDLE"; ChatMessage = "Интерфейс ChatGPT подтвердил завершение голосового режима."; }
             }
             catch (Exception ex) { lock (TvLock) { ChatState = "FAILED"; ChatMessage = "Завершение не подтверждено: " + ex.Message; } }
@@ -189,7 +197,8 @@ internal static partial class Program
         var grid = window.Grid;
         Row(grid, new Label { AutoSize = true, MaximumSize = new(700, 0), Text =
             "LG C5 → динамики → FreeBuds SE 2 на ПК → звук и микрофон → ChatGPT в Chrome. " +
-            "Один раз подключите наушники к Windows и выберите их ниже. В фоновом режиме Chrome запустится по команде, подключится к расширению и откроет голос ChatGPT." });
+            "Один раз подключите наушники к Windows и выберите их ниже. В фоновом режиме Chrome запустится по команде, подключится к расширению и откроет голос ChatGPT. " +
+            "Громкость игр Steam автоматически уменьшается вдвое на время разговора и восстанавливается после его завершения." });
         var enabled = Row(grid, new CheckBox { AutoSize = true, Text = "Разрешить подготовку разговора по команде Алисы", Checked = settings.Enabled });
         var background = Row(grid, new CheckBox { AutoSize = true, Text = "Запускать голос ChatGPT в фоне через расширение Chrome", Checked = settings.BackgroundVoice });
         var register = Row(grid, new Button { AutoSize = true, Text = "Подключить помощник к расширению Chrome" });
