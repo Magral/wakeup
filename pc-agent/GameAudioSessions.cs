@@ -37,11 +37,13 @@ internal static class GameAudioSessions
                                 using var process = Process.GetProcessById((int)pid);
                                 var path = process.MainModule?.FileName;
                                 if (string.IsNullOrEmpty(path)) continue;
-                                session.GetSessionIdentifier(out var id);
+                                session.GetSessionIdentifier(out var recoveryId);
+                                session.GetSessionInstanceIdentifier(out var id);
+                                session.GetState(out var sessionState);
                                 var volume = (IGameSimpleAudioVolume)control;
                                 volume.GetMasterVolume(out var level);
                                 var processKey = path + "|" + pid + "|" + process.StartTime.ToUniversalTime().Ticks;
-                                visit(new(endpoint + "|" + id, processKey, level), path, target =>
+                                visit(new(endpoint + "|" + id, processKey, level, endpoint + "|" + recoveryId, endpoint, sessionState == 1), path, target =>
                                 {
                                     var context = new Guid("067cbb63-3d69-4770-b16e-019e14a4ed15");
                                     volume.SetMasterVolume(target, ref context);
