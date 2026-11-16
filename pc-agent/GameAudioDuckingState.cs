@@ -29,7 +29,8 @@ internal sealed class GameAudioDuckingState
         // Infer transfer only after the prior session ceased rendering on another endpoint.
         // Concurrent sessions on one endpoint always keep their independent baselines.
         var migrated = activeKeys == null || session.Endpoint.Length == 0 ? null : volumes.Values.FirstOrDefault(x =>
-            x.ProcessKey == session.ProcessKey && x.Endpoint.Length > 0 && x.Endpoint != session.Endpoint
+            ((x.ProcessKey == session.ProcessKey && x.Endpoint.Length > 0 && x.Endpoint != session.Endpoint)
+                || (x.RecoveryKey.Length > 0 && x.RecoveryKey == session.RecoveryKey))
             && !activeKeys.Contains(x.Key) && Same(session.Volume, x.Applied));
         var original = migrated?.Original ?? session.Volume;
         var manual = migrated?.UserChanged ?? false;
