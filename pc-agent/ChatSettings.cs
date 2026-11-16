@@ -181,7 +181,7 @@ internal static partial class Program
                 lock (TvLock) { ChatState = "IDLE"; ChatMessage = "Интерфейс ChatGPT подтвердил завершение голосового режима."; }
             }
             catch (Exception ex) { lock (TvLock) { ChatState = "FAILED"; ChatMessage = "Завершение не подтверждено: " + ex.Message; } }
-            finally { lock (TvLock) ChatStopping = false; }
+            finally { GameDucking?.End(); lock (TvLock) ChatStopping = false; }
             Log(directory, "ChatGPT: " + ConversationDiagnostic());
         });
         return "CHAT_END_ACCEPTED";
