@@ -89,7 +89,12 @@ using (var lifetime = new CancellationTokenSource(TimeSpan.FromSeconds(12)))
     Assert(cancellation.RootElement.GetProperty("action").GetString() == "cancel", "Cancellation was not forwarded to Chrome");
     Assert(cancellation.RootElement.GetProperty("id").GetString() == beforeCancel.RootElement.GetProperty("id").GetString(), "Cancelled wrong request");
     try { await cancelResult; throw new Exception("Cancelled voice start completed"); } catch (OperationCanceledException) { }
-    client.Dispose(); lifetime.Cancel(); await server;
+    var disconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+    bridge.ConnectionLost += () => disconnected.TrySetResult();
+    client.Dispose();
+    await disconnected.Task.WaitAsync(TimeSpan.FromSeconds(2));
+    Assert(!bridge.Connected, "Disconnected browser still reported connected");
+    lifetime.Cancel(); await server;
 }
 Console.WriteLine("Native voice bridge checks passed: framing, request binding, real named-pipe round trip and cancellation.");
 // Exercise the actual WinExe native-host entry point with redirected binary stdio.
