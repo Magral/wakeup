@@ -5,6 +5,7 @@ plugins {
 android {
     namespace 'ru.wakemini.app'
     compileSdk 35
+    testOptions { unitTests.includeAndroidResources = true }
 
     signingConfigs {
         stable {
@@ -25,8 +26,8 @@ android {
         applicationId 'ru.wakemini.app'
         minSdk 23
         targetSdk 34
-        versionCode 8
-        versionName '1.4.1'
+        versionCode 9
+        versionName '1.7.3'
     }
 }
 
@@ -35,4 +36,9 @@ dependencies {
     implementation('com.journeyapps:zxing-android-embedded:4.3.0') { exclude group: 'com.google.zxing', module: 'core' }
     implementation 'com.google.zxing:core:3.3.0'
     implementation 'androidx.core:core:1.9.0'
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.14.1'
 }

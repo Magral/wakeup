@@ -11,6 +11,7 @@ using System.Windows.Forms;
 internal static partial class Program
 {
     private const int Port = 3000;
+    private static GameAudioDucking? GameDucking;
     private static readonly ConcurrentDictionary<string, Challenge> Challenges = new();
     private static readonly object LogLock = new();
     private static readonly CommandLedger Ledger = new();
@@ -42,12 +43,16 @@ internal static partial class Program
 
         using var stop = new CancellationTokenSource();
         var serverTask = RunServerAsync(baseDirectory, key, stop.Token);
+        GameDucking = new GameAudioDucking(baseDirectory, message => Log(baseDirectory, message), GameAudioSessions.Visit);
+        var duckingTask = GameDucking.RunAsync(stop.Token);
+        VoiceBridge.ConnectionLost += GameDucking.End;
         VoiceBridge.ConversationEnded += () => _ = Task.Run(async () =>
         {
             for (var attempt = 0; attempt < 20; attempt++)
             {
                 await Task.Delay(500);
                 if (VoiceBridge.HasVoiceSession) return;
+                GameDucking.End();
                 var result = ReturnSoundToTv(baseDirectory);
                 if (result == "SOUND_TV_BUSY") continue;
                 Log(baseDirectory, "Автовозврат звука: " + result); return;
@@ -56,8 +61,9 @@ internal static partial class Program
         _ = RunSteamCloudAsync(baseDirectory, key, stop.Token);
         var voiceBridgeTask = VoiceBridge.RunServerAsync(stop.Token);
         using var tray = new AgentTrayContext(baseDirectory);
-        Application.Run(tray);
-        stop.Cancel();
+        try { Application.Run(tray); }
+        finally { stop.Cancel(); GameDucking.End(); }
+        duckingTask.GetAwaiter().GetResult();
         try { serverTask.GetAwaiter().GetResult(); } catch (OperationCanceledException) { }
         try { voiceBridgeTask.GetAwaiter().GetResult(); } catch (OperationCanceledException) { }
         return 0;

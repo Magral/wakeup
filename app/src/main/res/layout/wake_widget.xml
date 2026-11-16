@@ -1,31 +1,11 @@
-<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    android:id="@+id/widget_root"
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:background="@drawable/widget_background"
-    android:gravity="center"
-    android:orientation="vertical"
-    android:padding="12dp">
-
-    <TextView
-        android:id="@+id/widget_title"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:text="⏻"
-        android:textColor="#27C6B7"
-        android:textSize="42sp"
-        android:textStyle="bold" />
-
-    <TextView
-        android:id="@+id/widget_status"
+    android:layout_height="match_parent">
+    <ImageView
+        android:id="@+id/widget_root"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="-3dp"
-        android:ellipsize="end"
-        android:gravity="center"
-        android:maxLines="1"
-        android:text="ВКЛ / ВЫКЛ"
-        android:textColor="#F0F5F8"
-        android:textSize="11sp"
-        android:textStyle="bold" />
-</LinearLayout>
+        android:layout_height="match_parent"
+        android:scaleType="centerInside"
+        android:src="@drawable/widget_power_preview"
+        android:contentDescription="@string/wake_widget_description" />
+</FrameLayout>
