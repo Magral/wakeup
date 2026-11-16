@@ -36,6 +36,7 @@ internal sealed class VoiceNativeBridge
     private string? voiceSessionId;
     internal bool HasVoiceSession => Volatile.Read(ref voiceSessionId) != null;
     internal event Action? ConversationEnded;
+    internal event Action? ConnectionLost;
     internal bool Connected { get { lock (gate) return connection?.IsConnected == true; } }
 
     internal async Task RunServerAsync(CancellationToken token)
@@ -74,6 +75,7 @@ internal sealed class VoiceNativeBridge
             finally
             {
                 lock (gate) connection = null;
+                ConnectionLost?.Invoke();
                 foreach (var item in pending.Values) item.Completion.TrySetException(new IOException("Связь с расширением Chrome прервалась."));
             }
         }
