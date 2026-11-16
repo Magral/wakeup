@@ -1,12 +1,12 @@
 using System.Text.Json;
 static void Equal(float actual, float expected, string message) { if (Math.Abs(actual - expected) > .0001f) throw new Exception(message + $": {actual} != {expected}"); }
 var state = new GameAudioDuckingState();
-var game = new GameAudioSession("hdmi/game", "game:1", .8f);
+var game = new GameAudioSession("hdmi/game", "game:1", .8f, "hdmi/app", "hdmi");
 var change = state.Duck(game) ?? throw new Exception("Game at 80 percent was not attenuated");
 Equal(change.Target, .4f, "80 percent becomes 40 percent");
 if (state.Duck(game with { Volume = .4f }) != null) throw new Exception("Repeated call ducks twice");
-var headset = new GameAudioSession("headset/game", "game:1", .4f);
-Equal(state.Duck(headset)!.Target, .4f, "Migrated attenuated volume must not halve again");
+var headset = new GameAudioSession("headset/game", "game:1", .4f, "headset/app", "headset");
+Equal(state.Duck(headset, new HashSet<string>{headset.Key})!.Target, .4f, "Migrated attenuated volume must not halve again");
 var other = new GameAudioSession("headset/other", "other:2", .6f);
 Equal(state.Duck(other)!.Target, .3f, "A newly launched game is ducked");
 Equal(state.Restore(game with {Volume = .4f})!.Target, .8f, "Original HDMI level restored");
@@ -69,3 +69,18 @@ try
     Console.WriteLine("Audio lifecycle passed: browser isolation, disk-before-volume, idempotent start, automatic end, restart recovery, newly started game, shutdown.");
 }
 finally { Directory.Delete(directory, true); }
+var simultaneous = new GameAudioDuckingState();
+simultaneous.Duck(game);
+var secondStream = game with { Key = "hdmi/game-2", Volume = .4f };
+Equal(simultaneous.Duck(secondStream, new HashSet<string>{game.Key, secondStream.Key})!.Target, .2f, "Same-process streams on same endpoint have independent volume");
+Equal(simultaneous.Restore(secondStream with {Volume = .2f})!.Target, .4f, "Second stream restores own baseline");
+var manualMove = new GameAudioDuckingState();
+manualMove.Duck(game);
+manualMove.Observe(game with {Volume = .2f});
+Equal(manualMove.Duck(headset with {Volume = .2f}, new HashSet<string>{headset.Key})!.Target, .2f, "Transferred manual slider is not halved again");
+var restartState = new GameAudioDuckingState(simultaneous.Entries);
+var replacement = game with {Key = "hdmi/restarted", Volume = .4f};
+if (restartState.Restore(replacement, new HashSet<string>{game.Key, replacement.Key}) != null)
+    throw new Exception("New instance consumed still-live old instance's recovery entry");
+Equal(restartState.Restore(replacement, new HashSet<string>{replacement.Key})!.Target, .8f, "Recovery uses application identity only after original instance disappeared");
+Console.WriteLine("Independent instances, independent streams, migrated user overrides and bounded recovery identity passed.");
