@@ -284,6 +284,7 @@ public class MainActivity extends Activity {
             runOnUiThread(() -> {
                 statusCheckRunning = false;
                 if (isFinishing() || isDestroyed()) return;
+                WakeWidgetProvider.showStatus(this, result.message);
                 setPcStatus(result.message, result.online ? Color.rgb(74, 214, 132) : Color.rgb(255, 105, 105));
             });
         });
