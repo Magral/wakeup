@@ -71,12 +71,22 @@ internal sealed class GameAudioDucking
     private void Refresh()
     {
         if (!active && state.Entries.Count == 0) return;
+        var observed = new List<GameAudioSession>();
+        visit((session, _, _) => observed.Add(session));
+        var presentKeys = observed.Select(x => x.Key).ToHashSet();
+        var activeKeys = observed.Where(x => x.Active).Select(x => x.Key).ToHashSet();
+        if (active)
+        {
+            bool changed = false;
+            foreach (var session in observed) changed |= state.Observe(session);
+            if (changed) Save();
+        }
         visit((session, path, set) =>
         {
             if (active)
             {
                 if (!GameAudioDuckingState.IsGamePath(path, gameRoots)) return;
-                var change = state.Duck(session);
+                var change = state.Duck(session, activeKeys);
                 if (change == null) return;
                 // The journal reaches disk BEFORE Windows persists the lowered slider.
                 try { Save(); set(change.Target); }
@@ -84,11 +94,12 @@ internal sealed class GameAudioDucking
             }
             else
             {
-                if (!state.Entries.Any(x => x.Key == session.Key)) return;
-                var change = state.Restore(session);
+                var saved = state.FindForRestore(session, presentKeys);
+                if (saved == null) return;
+                var change = state.Restore(session, presentKeys);
                 if (change != null) set(change.Target);
                 // A changed slider is a user's choice: leave it alone.
-                state.Forget(session.Key); Save();
+                state.Forget(saved.Key); Save();
             }
         });
     }
