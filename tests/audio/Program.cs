@@ -84,3 +84,10 @@ if (restartState.Restore(replacement, new HashSet<string>{game.Key, replacement.
     throw new Exception("New instance consumed still-live old instance's recovery entry");
 Equal(restartState.Restore(replacement, new HashSet<string>{replacement.Key})!.Target, .8f, "Recovery uses application identity only after original instance disappeared");
 Console.WriteLine("Independent instances, independent streams, migrated user overrides and bounded recovery identity passed.");
+
+var reopened = new GameAudioDuckingState();
+reopened.Duck(game);
+var newProcess = game with {Key = "hdmi/new-instance", ProcessKey = "game:999", Volume = .4f};
+Equal(reopened.Duck(newProcess, new HashSet<string>{newProcess.Key})!.Target, .4f, "Restarted game is not attenuated twice");
+Equal(reopened.Restore(newProcess with {Volume = .4f})!.Target, .8f, "Restarted game retains pre-conversation baseline");
+Console.WriteLine("Same-endpoint game restart retains original baseline.");
