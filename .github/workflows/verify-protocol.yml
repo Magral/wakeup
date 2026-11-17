@@ -1,7 +1,7 @@
 name: Verify command protocol
 on: [push, workflow_dispatch]
 concurrency:
-  group: verify-${{ github.ref }}
+  group: verify-${{ github.ref }}-1.7.4
   cancel-in-progress: true
 permissions:
   contents: read
