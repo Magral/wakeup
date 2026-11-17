@@ -26,7 +26,7 @@ internal static partial class Program
         var verb = input.HasValue ? "TV_HDMI" + input.Value : "TV_PC";
         lock (TvLock)
         {
-            if (TvOperation != null || ChatOperation != null || Volatile.Read(ref DesktopBusy) != 0) return verb + "_BUSY";
+            if (PowerTv?.GoingDown == true || TvOperation != null || ChatOperation != null || Volatile.Read(ref DesktopBusy) != 0) return verb + "_BUSY";
             LgTvSettings settings;
             try
             {
@@ -36,6 +36,7 @@ internal static partial class Program
                 if (string.IsNullOrWhiteSpace(settings.ClientKey)) return verb + "_NOT_CONFIGURED";
             }
             catch { return verb + "_NOT_CONFIGURED"; }
+            PowerTv?.CancelPending();
             var cancellation = new CancellationTokenSource(TimeSpan.FromSeconds(65));
             TvOperation = cancellation;
             TvState = "BUSY";
@@ -45,7 +46,9 @@ internal static partial class Program
                 string state, message;
                 try
                 {
-                    await new LgWebOsClient(settings, _ => { }).ShowPcAsync(cancellation.Token);
+                    await LgPowerInputTransport.InputGate.WaitAsync(cancellation.Token);
+                    try { await new LgWebOsClient(settings, _ => { }).ShowPcAsync(cancellation.Token); }
+                    finally { LgPowerInputTransport.InputGate.Release(); }
                     state = "OK"; message = $"Телевизор подтвердил HDMI {settings.Hdmi}.";
                 }
                 catch (OperationCanceledException)
@@ -77,7 +80,8 @@ internal static partial class Program
     {
         try
         {
-            if (!ReadTvSettings(directory).OnStartup) return;
+            var settings = ReadTvSettings(directory);
+            if (settings.PowerInputSync || !settings.OnStartup) return;
             var result = StartTv(directory);
             Log(directory, "LG TV при запуске помощника: " + result);
         }
@@ -100,11 +104,15 @@ internal static partial class Program
         Row(grid, new Label { Text = "HDMI компьютера", AutoSize = true });
         var hdmi = Row(grid, new NumericUpDown { Minimum = 1, Maximum = 4, Value = Math.Clamp(settings.Hdmi, 1, 4) });
         var secure = Row(grid, new CheckBox { Text = "Защищённое соединение WSS, порт 3001 (для C5)", AutoSize = true, Checked = settings.Secure });
+        var sync = Row(grid, new CheckBox { Text = "Следовать питанию ПК: запуск / пробуждение → HDMI 1, сон / выключение → HDMI 2", AutoSize = true, Checked = settings.PowerInputSync });
         var auto = Row(grid, new CheckBox { Text = "Включать ТВ и выбирать HDMI при запуске помощника Windows", AutoSize = true, Checked = settings.OnStartup });
+        auto.Enabled = !sync.Checked;
+        sync.CheckedChanged += (_, _) => auto.Enabled = !sync.Checked;
         Row(grid, new Label { AutoSize = true, ForeColor = System.Drawing.Color.DarkRed, MaximumSize = new(700, 0), Text =
             "Если включить автозапуск ТВ, он сработает и после удалённого включения ПК при входе в Windows. " +
             "Для запуска без телевизора отключите эту настройку и используйте кнопку «ПК + телевизор» на телефоне. " +
-            "Выключение ПК не выключает телевизор." });
+            "При синхронизации питания используются события Windows независимо от Алисы. " +
+            "Помощник должен работать в трее и запускаться вместе с Windows. Сон / выключение выбирает HDMI 2, а не выключает ТВ." });
         var pair = Row(grid, new Button { Text = "Сохранить и выполнить повторное сопряжение с ТВ…", AutoSize = true });
         var save = Row(grid, new Button { Text = "Сохранить настройки", AutoSize = true });
         var test = Row(grid, new Button { Text = "Включить ТВ / переключить на ПК", AutoSize = true });
@@ -127,7 +135,7 @@ internal static partial class Program
         LgTvSettings Capture()
         {
             var updated = new LgTvSettings { Address = address.Text.Trim(), Mac = mac.Text.Trim(), Hdmi = (int)hdmi.Value,
-                Secure = secure.Checked, OnStartup = auto.Checked };
+                Secure = secure.Checked, OnStartup = auto.Checked, PowerInputSync = sync.Checked };
             updated.Validate();
             // A changed TV/transport requires explicit pairing. Changing only HDMI does not.
             if (updated.Address == settings.Address && updated.Mac == settings.Mac && updated.Secure == settings.Secure)
