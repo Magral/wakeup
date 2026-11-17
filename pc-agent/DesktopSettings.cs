@@ -11,12 +11,13 @@ internal static partial class Program
     private static bool StartupEnabled()
     {
         using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
-        return key?.GetValue("WakeMiniAgent") is string value && value == $"\"{Environment.ProcessPath}\"";
+        return key?.GetValue("WakeMiniAgent") is string value &&
+            (value == $"\"{Environment.ProcessPath}\"" || value == $"\"{Environment.ProcessPath}\" --startup");
     }
     private static void SetStartup(bool enabled)
     {
         using var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
-        if (enabled) key.SetValue("WakeMiniAgent", $"\"{Environment.ProcessPath}\"");
+        if (enabled) key.SetValue("WakeMiniAgent", $"\"{Environment.ProcessPath}\" --startup");
         else key.DeleteValue("WakeMiniAgent", false);
     }
     private static (Form Form, TableLayoutPanel Grid) SettingsWindow(string title)

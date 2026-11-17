@@ -10,12 +10,12 @@ cloud = output / 'WakeMini-Alice-Cloud-1.7.2.zip'
 with zipfile.ZipFile(cloud, 'w', zipfile.ZIP_DEFLATED) as archive:
     for name in ['main.py', 'steam_cloud.py', 'requirements.txt', 'README.md', 'environment.example.json']:
         archive.write(root / 'alice-cloud' / name, name)
-bundle = output / 'WakeMini-1.7.3.zip'
+bundle = output / 'WakeMini-1.7.4.zip'
 with zipfile.ZipFile(bundle, 'w', zipfile.ZIP_DEFLATED) as archive:
     for source, target in [
         (root / 'publish' / 'package' / 'WakeMiniAgent.exe', 'WakeMiniAgent.exe'),
         (root / 'pc-agent' / 'THIRD-PARTY-NOTICES.txt', 'THIRD-PARTY-NOTICES.txt'),
-        (root / 'docs' / 'UPDATE-1.7.3.md', 'README.md'),
+        (root / 'docs' / 'UPDATE-1.7.4.md', 'README.md'),
         (cloud, cloud.name),
     ]:
         archive.write(source, target)

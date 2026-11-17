@@ -12,6 +12,7 @@ internal static partial class Program
 {
     private const int Port = 3000;
     private static GameAudioDucking? GameDucking;
+    private static TvPowerCoordinator? PowerTv;
     private static readonly ConcurrentDictionary<string, Challenge> Challenges = new();
     private static readonly object LogLock = new();
     private static readonly CommandLedger Ledger = new();
@@ -42,6 +43,30 @@ internal static partial class Program
         }
 
         using var stop = new CancellationTokenSource();
+        using var powerTransport = new LgPowerInputTransport(() => ReadTvSettings(baseDirectory), message => Log(baseDirectory, message));
+        bool PowerEnabled()
+        {
+            try { var tv = ReadTvSettings(baseDirectory); return tv.PowerInputSync && !string.IsNullOrWhiteSpace(tv.ClientKey); }
+            catch { return false; }
+        }
+        using var powerCoordinator = new TvPowerCoordinator(PowerEnabled, powerTransport.SelectAsync, () => { powerTransport.CancelWarmup(); CancelTv(); }, message =>
+        {
+            lock (TvLock) { TvMessage = message; TvState = message.Contains("ТВ подтвердил") ? "OK" : "FAILED"; }
+            Log(baseDirectory, message);
+        });
+        PowerTv = powerCoordinator;
+        using var powerWindow = new PowerBroadcastWindow(powerCoordinator, message => Log(baseDirectory, message));
+        powerWindow.Start();
+        var warmTask = powerTransport.MaintainAsync(() => !powerCoordinator.GoingDown, stop.Token);
+        try
+        {
+            // Upgrade the old Run entry without enabling autostart if the user disabled it.
+            if (StartupEnabled()) SetStartup(true);
+            var isNewLogon = PowerStartupMarker.Record(Path.Combine(baseDirectory, "wake-power-session.txt"),
+                WindowsLogonIdentity.Read(), args.Contains("--startup"));
+            if (isNewLogon) _ = powerCoordinator.ResumeAsync();
+        }
+        catch (Exception ex) { Log(baseDirectory, "Определение запуска Windows: " + ex.Message); }
         var serverTask = RunServerAsync(baseDirectory, key, stop.Token);
         GameDucking = new GameAudioDucking(baseDirectory, message => Log(baseDirectory, message), GameAudioSessions.Visit);
         var duckingTask = GameDucking.RunAsync(stop.Token);
@@ -62,7 +87,8 @@ internal static partial class Program
         var voiceBridgeTask = VoiceBridge.RunServerAsync(stop.Token);
         using var tray = new AgentTrayContext(baseDirectory);
         try { Application.Run(tray); }
-        finally { stop.Cancel(); GameDucking.End(); }
+        finally { powerCoordinator.Dispose(); CancelTv(); stop.Cancel(); GameDucking.End(); }
+        warmTask.GetAwaiter().GetResult();
         duckingTask.GetAwaiter().GetResult();
         try { serverTask.GetAwaiter().GetResult(); } catch (OperationCanceledException) { }
         try { voiceBridgeTask.GetAwaiter().GetResult(); } catch (OperationCanceledException) { }
@@ -191,7 +217,12 @@ internal static partial class Program
                             await Task.Delay(500);
                             if (command == "SLEEP")
                             {
-                                if (!SetSuspendState(false, false, false)) Log(baseDirectory, "Windows не перешла в сон.");
+                                if (PowerTv != null) await PowerTv.PrepareDownAsync(TimeSpan.FromSeconds(4));
+                                if (!SetSuspendState(false, false, false))
+                                {
+                                    Log(baseDirectory, "Windows не перешла в сон.");
+                                    if (PowerTv != null) _ = PowerTv.ResumeAsync();
+                                }
                                 return;
                             }
                             Process.Start(new ProcessStartInfo("shutdown.exe", command == "RESTART" ? "/r /t 10" : "/s /t 10")

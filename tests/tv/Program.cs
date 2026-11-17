@@ -184,6 +184,34 @@ try
         var change = await Read(ws);
         await Send(ws, new { id = change.GetProperty("id").GetString(), type = "response", payload = new { returnValue = false } });
     }, () => Reject(() => client.ReleaseBluetoothAudioAsync(token), "Audio output rejection accepted"));
+    // A pre-authenticated input session handles multiple power transitions without
+    // re-registering or waking the TV during the short suspend notification.
+    int beforeWakeCount = wakes;
+    await Scenario(async ws =>
+    {
+        await Register(ws, true);
+        foreach (var input in new[]{2,1})
+        {
+            var change = await Read(ws);
+            Assert(change.GetProperty("payload").GetProperty("inputId").GetString() == "HDMI_" + input, "Persistent session selected wrong input");
+            await Send(ws, new { id = change.GetProperty("id").GetString(), type = "response", payload = new { returnValue = true } });
+        }
+    }, async () =>
+    {
+        using var ready = await client.OpenInputSessionAsync(token);
+        await ready.SelectAsync(2, token);
+        await ready.SelectAsync(1, token);
+    });
+    await Scenario(async ws =>
+    {
+        await Read(ws);
+        await ws.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "TV off", token);
+    }, async () =>
+    {
+        try { using var ready = await client.OpenInputSessionAsync(token); throw new Exception("Closed power-input socket accepted"); }
+        catch (IOException) { }
+    });
+    Assert(wakes == beforeWakeCount, "Power-down transport unexpectedly woke the TV");
     Assert(saves == 1, "Normal command rewrote pairing credentials");
 }
 finally { listener.Stop(); }
