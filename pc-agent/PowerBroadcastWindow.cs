@@ -1,16 +1,19 @@
 using System.Windows.Forms;
+using System.Runtime.InteropServices;
 
 // A hidden top-level window, NOT HWND_MESSAGE: Windows broadcasts power/session
 // messages to top-level windows even while the desktop is locked.
 internal sealed class PowerBroadcastWindow(TvPowerCoordinator coordinator, Action<string> log) : NativeWindow, IDisposable
 {
+    [DllImport("user32.dll")] private static extern int GetSystemMetrics(int index);
     internal void Start() => CreateHandle(new CreateParams
     {
         Caption = "Wake Mini power events", Style = unchecked((int)0x80000000), ExStyle = 0x80
     });
     protected override void WndProc(ref Message message)
     {
-        switch (PowerEventPolicy.Decode(message.Msg, message.WParam.ToInt64(), message.LParam.ToInt64()))
+        switch (PowerEventPolicy.Decode(message.Msg, message.WParam.ToInt64(), message.LParam.ToInt64(),
+            message.Msg == 0x16 && GetSystemMetrics(0x2000 /* SM_SHUTTINGDOWN */) != 0))
         {
             case TvPowerEvent.Suspend:
             case TvPowerEvent.Shutdown:
