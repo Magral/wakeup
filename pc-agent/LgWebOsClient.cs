@@ -12,6 +12,7 @@ internal sealed class LgTvSettings
     public string Mac { get; set; } = "";
     public int Hdmi { get; set; } = 1;
     public bool OnStartup { get; set; }
+    public bool PowerInputSync { get; set; } = true;
     public bool Secure { get; set; } = true;
     public string? ClientKey { get; set; }
     public string? CertificateHash { get; set; }
@@ -109,6 +110,33 @@ internal sealed class LgWebOsClient
             }
         }
         throw new IOException("Телевизор не готов к управлению: соединение не установлено или закрывается при загрузке. Проверьте питание, IP/MAC и «Включение ТВ с мобильного».", last);
+    }
+
+    // No wake/retry loop here: shutdown/suspend must operate within a short deadline.
+    internal async Task<InputSession> OpenInputSessionAsync(CancellationToken token)
+    {
+        settings.Validate();
+        if (string.IsNullOrWhiteSpace(settings.ClientKey) || settings.Secure && string.IsNullOrWhiteSpace(settings.CertificateHash))
+            throw new InvalidOperationException("Сначала выполните сопряжение с ТВ.");
+        var socket = NewSocket(false, out _);
+        socket.Options.KeepAliveInterval = TimeSpan.FromSeconds(10);
+        try
+        {
+            await ConnectAsync(socket, token);
+            await RegisterAsync(socket, settings.ClientKey, token);
+            return new InputSession(socket);
+        }
+        catch { socket.Dispose(); throw; }
+    }
+    internal sealed class InputSession(ClientWebSocket socket) : IDisposable
+    {
+        internal bool Connected => socket.State == WebSocketState.Open;
+        internal Task SelectAsync(int input, CancellationToken token)
+        {
+            if (input is < 1 or > 4) throw new ArgumentOutOfRangeException(nameof(input));
+            return SelectHdmiAsync(socket, input, token);
+        }
+        public void Dispose() => socket.Dispose();
     }
 
     private static async Task SelectHdmiAsync(ClientWebSocket socket, int hdmi, CancellationToken token)
