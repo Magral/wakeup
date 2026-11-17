@@ -68,3 +68,6 @@ try
 }
 finally { if (File.Exists(marker)) File.Delete(marker); }
 Console.WriteLine("Windows logon marker distinguishes actual startup from helper/update restarts.");
+
+Assert(PowerEventPolicy.Decode(0x16,1,1,true) == TvPowerEvent.Shutdown, "Full Windows servicing shutdown must not be confused with helper-only update");
+Assert(PowerEventPolicy.Decode(0x16,1,0x80000001L,true) == TvPowerEvent.None, "Logoff flag must stay excluded during servicing");
