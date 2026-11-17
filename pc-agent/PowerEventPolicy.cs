@@ -1,7 +1,7 @@
 internal enum TvPowerEvent { None, Suspend, Resume, Shutdown }
 internal static class PowerEventPolicy
 {
-    internal static TvPowerEvent Decode(int message, long wParam, long lParam)
+    internal static TvPowerEvent Decode(int message, long wParam, long lParam, bool systemShuttingDown = false)
     {
         if (message == 0x218) return wParam switch
         {
@@ -11,7 +11,8 @@ internal static class PowerEventPolicy
         };
         // ENDSESSION_LOGOFF and ENDSESSION_CLOSEAPP must not turn an ordinary
         // logoff / Restart Manager update of the helper into a PC power event.
-        if (message == 0x16 && wParam != 0 && (lParam & 0x80000001L) == 0) return TvPowerEvent.Shutdown;
+        if (message == 0x16 && wParam != 0 && (lParam & 0x80000000L) == 0
+            && ((lParam & 1) == 0 || systemShuttingDown)) return TvPowerEvent.Shutdown;
         return TvPowerEvent.None;
     }
 }
