@@ -443,7 +443,7 @@ internal static partial class Program
             {
                 Log(_baseDirectory, DisplayDiagnostics.Capture());
                 var logPath = Path.Combine(_baseDirectory, "WakeMiniAgent.log");
-                try { Process.Start(new ProcessStartInfo("notepad.exe", $"\\"{logPath}\\"") { UseShellExecute = true }); }
+                try { Process.Start(new ProcessStartInfo("notepad.exe", "\"" + logPath + "\"") { UseShellExecute = true }); }
                 catch (Exception ex) { MessageBox.Show("Не удалось открыть журнал: " + ex.Message, "Wake Mini"); }
             }));
             menu.Items.Add(new ToolStripMenuItem("Профили: Работа / Игры…", null, (_, _) => ConfigureProfiles(_baseDirectory)));
