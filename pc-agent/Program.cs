@@ -49,7 +49,25 @@ internal static partial class Program
             try { var tv = ReadTvSettings(baseDirectory); return tv.PowerInputSync && !string.IsNullOrWhiteSpace(tv.ClientKey); }
             catch { return false; }
         }
-        using var powerCoordinator = new TvPowerCoordinator(PowerEnabled, powerTransport.SelectAsync, () => { powerTransport.CancelWarmup(); CancelTv(); }, message =>
+        async Task SelectPowerInput(int input, CancellationToken token)
+        {
+            await powerTransport.SelectAsync(input, token);
+            if (input == 1)
+            {
+                // Let Windows/NVIDIA publish the post-resume topology, then capture it.
+                await Task.Delay(TimeSpan.FromSeconds(3), token);
+                Log(baseDirectory, DisplayDiagnostics.Capture());
+
+                // Re-select HDMI once over a fresh authenticated webOS request. This
+                // safely repeats the TV-side input/CEC negotiation without restarting
+                // the NVIDIA driver or changing the Windows display layout.
+                Log(baseDirectory, "HDMI Recovery: повторный выбор HDMI 1 после пробуждения.");
+                await powerTransport.SelectAsync(1, token);
+                await Task.Delay(TimeSpan.FromSeconds(2), token);
+                Log(baseDirectory, DisplayDiagnostics.Capture());
+            }
+        }
+        using var powerCoordinator = new TvPowerCoordinator(PowerEnabled, SelectPowerInput, () => { powerTransport.CancelWarmup(); CancelTv(); }, message =>
         {
             lock (TvLock) { TvMessage = message; TvState = message.Contains("ТВ подтвердил") ? "OK" : "FAILED"; }
             Log(baseDirectory, message);
@@ -421,6 +439,13 @@ internal static partial class Program
             menu.Items.Add(new ToolStripMenuItem("LG: HDMI 2 — приставка", null, (_, _) => StartTv(_baseDirectory, 2)));
             menu.Items.Add(new ToolStripMenuItem("Телевизор LG OLED…", null, (_, _) => ConfigureTv(_baseDirectory)));
             menu.Items.Add(new ToolStripMenuItem("Состояние и диагностика…", null, (_, _) => ShowDiagnostics(_baseDirectory)));
+            menu.Items.Add(new ToolStripMenuItem("Собрать диагностику HDMI и открыть журнал", null, (_, _) =>
+            {
+                Log(_baseDirectory, DisplayDiagnostics.Capture());
+                var logPath = Path.Combine(_baseDirectory, "WakeMiniAgent.log");
+                try { Process.Start(new ProcessStartInfo("notepad.exe", "\"" + logPath + "\"") { UseShellExecute = true }); }
+                catch (Exception ex) { MessageBox.Show("Не удалось открыть журнал: " + ex.Message, "Wake Mini"); }
+            }));
             menu.Items.Add(new ToolStripMenuItem("Профили: Работа / Игры…", null, (_, _) => ConfigureProfiles(_baseDirectory)));
             menu.Items.Add(new ToolStripMenuItem("Разговор с ChatGPT / FreeBuds…", null, (_, _) => ConfigureConversation(_baseDirectory)));
             menu.Items.Add(new ToolStripMenuItem("Вернуть звук на телевизор", null, (_, _) => MessageBox.Show(ReturnSoundToTv(_baseDirectory), "Wake Mini")));
