@@ -49,6 +49,12 @@ internal static partial class Program
                     await LgPowerInputTransport.InputGate.WaitAsync(cancellation.Token);
                     try { await new LgWebOsClient(settings, _ => { }).ShowPcAsync(cancellation.Token); }
                     finally { LgPowerInputTransport.InputGate.Release(); }
+                    if (settings.Hdmi == 1)
+                    {
+                        // Capture what Windows sees after the TV input has had time to settle.
+                        await Task.Delay(TimeSpan.FromSeconds(3), cancellation.Token);
+                        Log(directory, DisplayDiagnostics.Capture());
+                    }
                     state = "OK"; message = $"Телевизор подтвердил HDMI {settings.Hdmi}.";
                 }
                 catch (OperationCanceledException)
