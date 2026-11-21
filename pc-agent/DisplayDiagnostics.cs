@@ -98,6 +98,6 @@ internal static class DisplayDiagnostics
     {
         if (string.IsNullOrWhiteSpace(value)) return string.Empty;
         var parts = value.Split('\\', StringSplitOptions.RemoveEmptyEntries);
-        return string.Join('\\', parts.Take(Math.Min(2, parts.Length)));
+        return string.Join("\\\\", parts.Take(Math.Min(2, parts.Length)));
     }
 }
