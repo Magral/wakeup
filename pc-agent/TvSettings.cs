@@ -51,8 +51,12 @@ internal static partial class Program
                     finally { LgPowerInputTransport.InputGate.Release(); }
                     if (settings.Hdmi == 1)
                     {
-                        // Capture what Windows sees after the TV input has had time to settle.
+                        // Capture Windows' view, then safely repeat the TV-side HDMI selection.
                         await Task.Delay(TimeSpan.FromSeconds(3), cancellation.Token);
+                        Log(directory, DisplayDiagnostics.Capture());
+                        Log(directory, "HDMI Recovery: повторный ручной выбор HDMI 1.");
+                        await new LgWebOsClient(settings, _ => { }).ShowPcAsync(cancellation.Token);
+                        await Task.Delay(TimeSpan.FromSeconds(2), cancellation.Token);
                         Log(directory, DisplayDiagnostics.Capture());
                     }
                     state = "OK"; message = $"Телевизор подтвердил HDMI {settings.Hdmi}.";
