@@ -49,7 +49,17 @@ internal static partial class Program
             try { var tv = ReadTvSettings(baseDirectory); return tv.PowerInputSync && !string.IsNullOrWhiteSpace(tv.ClientKey); }
             catch { return false; }
         }
-        using var powerCoordinator = new TvPowerCoordinator(PowerEnabled, powerTransport.SelectAsync, () => { powerTransport.CancelWarmup(); CancelTv(); }, message =>
+        async Task SelectPowerInput(int input, CancellationToken token)
+        {
+            await powerTransport.SelectAsync(input, token);
+            if (input == 1)
+            {
+                // Allow Windows/NVIDIA a moment to publish the post-resume display topology.
+                await Task.Delay(TimeSpan.FromSeconds(3), token);
+                Log(baseDirectory, DisplayDiagnostics.Capture());
+            }
+        }
+        using var powerCoordinator = new TvPowerCoordinator(PowerEnabled, SelectPowerInput, () => { powerTransport.CancelWarmup(); CancelTv(); }, message =>
         {
             lock (TvLock) { TvMessage = message; TvState = message.Contains("ТВ подтвердил") ? "OK" : "FAILED"; }
             Log(baseDirectory, message);
